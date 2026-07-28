@@ -1,25 +1,27 @@
 """
 This module provides the main entry point for the belief-guided NAS system.
 
-The first version only loads the configuration and reports the active mode.
-Later versions will connect the archive, similarity, belief, uncertainty,
-and selection modules through this class.
+The manager keeps the new belief components behind one public interface. The
+current version loads the configuration and exposes the architecture encoder.
+It still does not change the genetic algorithm behaviour.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from .config import BeliefConfig
+from .encoder import ArchitectureEncoder, ArchitectureEncoding
 
 
 class BeliefManager:
     """Coordinate belief-related components through one public interface."""
 
     def __init__(self, config: Optional[BeliefConfig] = None) -> None:
-        """Make the manager with a validated configuration."""
+        """Create the manager with a validated configuration."""
 
         self.config = config or BeliefConfig.from_ini()
+        self.encoder = ArchitectureEncoder()
 
     @property
     def is_enabled(self) -> bool:
@@ -39,6 +41,16 @@ class BeliefManager:
 
         return self.is_enabled and self.config.mode == "guided"
 
+    def encode_architecture(self, individual: Any) -> ArchitectureEncoding:
+        """Encode one architecture through the package public interface."""
+
+        return self.encoder.encode(individual)
+
+    def encode_architectures(self, individuals: Iterable[Any]) -> List[ArchitectureEncoding]:
+        """Encode several architectures through the package public interface."""
+
+        return self.encoder.encode_many(individuals)
+
     def describe(self) -> Dict[str, Any]:
         """Return a small status summary for logs and debugging."""
 
@@ -48,6 +60,7 @@ class BeliefManager:
             "warmup_generations": self.config.warmup_generations,
             "candidate_multiplier": self.config.candidate_multiplier,
             "evaluation_budget": self.config.evaluation_budget,
+            "encoder_version": self.encoder.VERSION,
         }
 
 
