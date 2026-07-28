@@ -1,66 +1,151 @@
-# Belief-Guided NAS Package
+# Belief-Guided Attention NAS
 
-This package contains the new belief-guided evaluation components for the attention-aware evolutionary NAS project.
+This package adds an archive-wide fitness belief layer to the existing genetic
+NAS code. The package is kept under `genetic/belief/` to reduce changes in the
+original project.
 
-## Design goal
+## Main idea
 
-The new code is kept under `genetic/belief/` to avoid mixing the belief system with the existing genetic algorithm implementation.
+Each evaluated architecture provides local fitness evidence for unevaluated
+architectures. Architecture similarity controls how strongly each real fitness
+value contributes to a candidate.
 
-The existing code will communicate with this package through `BeliefManager`.
-
-## Current modules
-
-- `config.py`: reads and validates belief settings.
-- `manager.py`: provides the main interface for the existing GA code.
-- `encoder.py`: converts an `Individual` object into deterministic architecture features.
-
-## Planned modules
-
-- `archive.py`: stores unique evaluated architectures and their true fitness.
-- `similarity.py`: calculates component-aware architecture similarity.
-- `belief.py`: calculates belief mean and uncertainty.
-- `selector.py`: selects candidates for real evaluation.
-- `metrics.py`: calculates cycle-level validation metrics.
-- `storage.py`: saves and restores belief state and logs.
-
-## Architecture encoder
-
-The encoder reads `Individual.units` without changing the existing population classes. It produces:
-
-- module sequence
-- base-module sequence
-- attention sequence
-- base-attention pairs
-- module, base, and attention counts
-- ordered transitions
-- unit-level numeric parameters
-- compact numeric summaries
-- the existing architecture UUID and architecture string
-
-The output is deterministic and serializable. Fitness is not used by the encoder.
-
-## Current status
-
-The package can now read the configuration and encode architectures. It still does not change the genetic algorithm behaviour.
-
-## Operating modes
-
-- `off`: the belief system is disabled.
-- `monitor`: belief values are recorded, but all normal offspring are still evaluated.
-- `guided`: belief values are used to choose which offspring are evaluated.
-
-The project must remain at `enabled = 0` and `mode = off` until the integration steps are completed.
-
-## Encoder self-test
-
-Run this command from the project root:
-
-```bash
-python -m genetic.belief.encoder
-```
-
-Expected first line:
+The default belief mean is:
 
 ```text
-Architecture encoder self-test passed.
+mu_i = sum(K_ij * fitness_j) / sum(K_ij)
+```
+
+The kernel weight is:
+
+```text
+K_ij = exp(-(1 - similarity_ij)^2 / (2 * bandwidth^2))
+```
+
+An optional `bayesian_precision` mode combines the same evidence through a
+Gaussian precision update. It is included as an ablation and should not be
+presented as a full physical Kalman filter.
+
+## Package modules
+
+- `config.py`: reads and validates `[belief]` settings.
+- `encoder.py`: converts `Individual.units` into deterministic features.
+- `archive.py`: stores unique architectures with real fitness.
+- `storage.py`: saves archive and calibration state.
+- `similarity.py`: calculates interpretable architecture similarity.
+- `estimator.py`: calculates belief mean and evidence statistics.
+- `calibration.py`: learns uncertainty and similarity weights from past data.
+- `uncertainty.py`: calculates raw and calibrated uncertainty.
+- `novelty.py`: calculates archive-based exploration novelty.
+- `selector.py`: selects candidates for real evaluation.
+- `monitoring.py`: stores pre-evaluation and post-evaluation rows.
+- `metrics.py`: calculates cycle-wise validation metrics.
+- `manager.py`: provides the only integration interface used by `evolve.py`.
+- `self_test.py`: runs a small integration test without training a model.
+
+## Search modes
+
+### Off
+
+```ini
+enabled = 0
+mode = off
+```
+
+The original GA behaviour is used.
+
+### Monitor
+
+```ini
+enabled = 1
+mode = monitor
+```
+
+The normal offspring population is evaluated. Belief values are recorded before
+training and compared with real fitness after training. Belief does not guide
+selection.
+
+### Guided
+
+```ini
+enabled = 1
+mode = guided
+```
+
+Warm-up cycles use the normal GA. After warm-up, a larger candidate pool is
+generated and only the selected evaluation batch is trained.
+
+## Uncertainty
+
+Raw uncertainty combines:
+
+- archive fitness variance,
+- effective neighbour count,
+- local fitness disagreement among similar neighbours.
+
+After enough completed rows, a small ridge model learns expected absolute belief
+error. This model predicts uncertainty only; it does not predict architecture
+fitness.
+
+Novelty remains separate from uncertainty and is used only for exploration.
+
+## Quota selection
+
+The default guided policy uses:
+
+- 60% high belief mean,
+- 20% UCB (`mean + kappa * uncertainty`),
+- 10% novelty,
+- 10% random audit.
+
+The random audit subset provides a less biased check of belief quality during
+guided search.
+
+## Output structure
+
+Each fresh run receives its own directory:
+
+```text
+belief_outputs/
+  active_run.txt
+  run_YYYYMMDD_HHMMSS/
+    belief_archive.json
+    belief_state.json
+    candidate_pre_evaluation.csv
+    evaluated_offspring.csv
+    cycle_metrics.csv
+    selection_summary.csv
+```
+
+`active_run.txt` allows an interrupted run to restore the correct belief state.
+
+## Recommended first run
+
+Start with:
+
+```ini
+enabled = 1
+mode = monitor
+belief_method = kernel_mean
+```
+
+Check cycle-wise Spearman correlation and uncertainty-error correlation. After
+monitoring is stable, change only:
+
+```ini
+mode = guided
+```
+
+## Self-test
+
+Run from the project root:
+
+```bash
+python -m genetic.belief.self_test
+```
+
+Expected output:
+
+```text
+Belief package integration self-test passed.
 ```
