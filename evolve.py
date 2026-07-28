@@ -3,6 +3,7 @@ from genetic.population import Population
 from genetic.evaluate import FitnessEvaluate
 from genetic.crossover_and_mutation import CrossoverAndMutation
 from genetic.selection_operator import Selection
+from genetic.belief import BeliefConfig, BeliefManager
 import numpy as np
 import copy
 import random
@@ -32,6 +33,8 @@ class EvolveCNN(object):
         self.params = params
         self.pops = None
         self.horovod_enabled = StatusUpdateTool.is_horovod_enabled()
+        self.belief_manager = None
+        self.belief_enabled = False
             
     def sync_individuals(self, individuals):
             """
@@ -114,10 +117,62 @@ class EvolveCNN(object):
         fitness.evaluate()
 
 
-    def crossover_and_mutation(self):
+    def setup_belief_manager(self):
+        """Create the belief manager on rank 0 only."""
+
+        belief_config = BeliefConfig.from_ini()
+        self.belief_enabled = belief_config.enabled
+        if (not self.horovod_enabled) or (self.rank == 0):
+            self.belief_manager = BeliefManager(
+                config=belief_config,
+                log=Log,
+                restore_existing=StatusUpdateTool.is_evolution_running(),
+            )
+            Log.info('Belief manager status: %s' % self.belief_manager.describe())
+
+    def belief_prepare_cycle(self, cycle):
+        """Score offspring and keep the selected evaluation batch."""
+
+        if (not self.horovod_enabled) or (self.rank == 0):
+            if self.belief_manager is not None and self.belief_manager.is_enabled:
+                cache_map = Utils.load_cache_data()
+                preparation = self.belief_manager.prepare_cycle(
+                    candidates=self.pops.individuals,
+                    cycle=cycle,
+                    cache_map=cache_map,
+                )
+                self.pops.individuals = copy.deepcopy(preparation.selected_individuals)
+
+        if self.horovod_enabled:
+            self.pops = self.sync_individuals(self.pops)
+            hvd.barrier()
+
+    def belief_post_evaluate(self, cycle):
+        """Update belief records after true fitness becomes available."""
+
+        if (not self.horovod_enabled) or (self.rank == 0):
+            if self.belief_manager is not None and self.belief_manager.is_enabled:
+                metrics = self.belief_manager.post_evaluate(
+                    evaluated_individuals=self.pops.individuals,
+                    cycle=cycle,
+                )
+                if metrics is not None:
+                    Log.info('Belief cycle metrics: %s' % metrics.to_dict())
+
+    def crossover_and_mutation(self, target_size=None, legacy_mode=True):
         #print(f"Rank {hvd.rank()} in crossover_and_mutation function")
         if (not self.horovod_enabled) or (self.rank == 0):
-            cm = CrossoverAndMutation(self.params['genetic_prob'][0], self.params['genetic_prob'][1], Log, self.pops.individuals, _params={'gen_no': self.pops.gen_no})
+            cm = CrossoverAndMutation(
+                self.params['genetic_prob'][0],
+                self.params['genetic_prob'][1],
+                Log,
+                self.pops.individuals,
+                _params={
+                    'gen_no': self.pops.gen_no,
+                    'target_size': target_size or self.params['pop_size'],
+                    'legacy_mode': legacy_mode,
+                },
+            )
             offspring = cm.process()
             self.parent_pops = copy.deepcopy(self.pops) # this is used for elitism next
             self.pops.individuals = copy.deepcopy(offspring)
@@ -239,6 +294,7 @@ class EvolveCNN(object):
         else:
             self.rank = 0
             self.size = 1
+        self.setup_belief_manager()
         Log.info('*' * 25)
         if self.horovod_enabled:
             hvd.barrier()
@@ -278,6 +334,11 @@ class EvolveCNN(object):
         #if (not self.horovod_enabled) or (self.rank == 0):
         Log.info('EVOLVE[%d-gen]-Begin to evaluate the fitness' % (gen_no)) 
         self.fitness_evaluate() 
+        if (not self.horovod_enabled) or (self.rank == 0):
+            if self.belief_manager is not None and self.belief_manager.is_enabled:
+                self.belief_manager.bootstrap_population(
+                    self.pops.individuals, generation=gen_no
+                )
         #if (not self.horovod_enabled) or (self.rank == 0):
         Log.info('EVOLVE[%d-gen]-Finish the evaluation' % (gen_no))
         gen_no += 1
@@ -289,13 +350,29 @@ class EvolveCNN(object):
             if (not self.horovod_enabled) or (self.rank == 0):
                 Log.info('EVOLVE[%d-gen]-Begin to crossover and mutation' % (curr_gen))
             #if (not self.horovod_enabled) or (self.rank == 0):
-            self.crossover_and_mutation()
+            target_size = self.params['pop_size']
+            legacy_mode = True
+            if (not self.horovod_enabled) or (self.rank == 0):
+                if self.belief_manager is not None and self.belief_manager.is_enabled:
+                    target_size = self.belief_manager.candidate_target_size(
+                        self.params['pop_size'], curr_gen
+                    )
+                    legacy_mode = not self.belief_manager.guided_active(curr_gen)
+            self.crossover_and_mutation(
+                target_size=target_size, legacy_mode=legacy_mode
+            )
             if (not self.horovod_enabled) or (self.rank == 0):
                 Log.info('EVOLVE[%d-gen]-Finish crossover and mutation' % (curr_gen))
+
+            if self.belief_enabled:
+                self.belief_prepare_cycle(curr_gen)
+
+            if (not self.horovod_enabled) or (self.rank == 0):
                 Log.info('EVOLVE[%d-gen]-Begin to evaluate the fitness' % (curr_gen))
             if self.horovod_enabled:
                 hvd.barrier()
             self.fitness_evaluate()
+            self.belief_post_evaluate(curr_gen)
             if (not self.horovod_enabled) or (self.rank == 0):
                 Log.info('EVOLVE[%d-gen]-Finish the evaluation' % (curr_gen))       
                 Log.info('EVOLVE[%d-gen]-Begin to environment selection' % (curr_gen))
