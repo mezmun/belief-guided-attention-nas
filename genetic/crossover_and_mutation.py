@@ -37,19 +37,41 @@ class CrossoverAndMutation(object):
 
         gen_no = self.params['gen_no']
         target_size = int(self.params.get('target_size', len(self.individuals)))
+        minimum_required_size = int(
+            self.params.get('minimum_required_size', min(target_size, len(self.individuals)))
+        )
+        excluded_architecture_ids = set(
+            self.params.get('excluded_architecture_ids', ())
+        )
         if target_size < 1:
             raise ValueError('target_size must be at least 1')
+        if minimum_required_size < 1:
+            raise ValueError('minimum_required_size must be at least 1')
 
         print("gen no in process =", gen_no)
         mutation_file = f'./populations/mutation_{gen_no:02d}.txt'
         if os.path.exists(mutation_file):
-            self.log.info(
-                f'[INFO] Existing mutation file found: {mutation_file}, '
-                'skipping crossover and mutation.'
-            )
+            self.log.info(f'[INFO] Existing mutation file found: {mutation_file}')
             pop = Utils.load_population('mutation', gen_no)
-            self.offspring = pop.individuals
-            return self.offspring
+            if bool(self.params.get('legacy_mode', False)):
+                self.offspring = pop.individuals
+                return self.offspring
+
+            restored_unique = {}
+            for individual in pop.individuals:
+                architecture_id = individual.uuid()[0]
+                if architecture_id in excluded_architecture_ids:
+                    continue
+                restored_unique.setdefault(architecture_id, individual)
+
+            if len(restored_unique) >= minimum_required_size:
+                self.offspring = list(restored_unique.values())[:target_size]
+                return self.offspring
+
+            self.log.warn(
+                'The stored mutation pool has only %d usable unknown architectures. '
+                'A new candidate pool will be generated.' % len(restored_unique)
+            )
 
         if bool(self.params.get('legacy_mode', False)):
             crossover = Crossover(self.individuals, self.prob_crossover, self.log)
@@ -78,6 +100,8 @@ class CrossoverAndMutation(object):
 
             for individual in batch:
                 architecture_id = individual.uuid()[0]
+                if architecture_id in excluded_architecture_ids:
+                    continue
                 if architecture_id not in unique_offspring:
                     unique_offspring[architecture_id] = individual
                 if len(unique_offspring) >= target_size:
@@ -92,8 +116,14 @@ class CrossoverAndMutation(object):
         self.offspring = list(unique_offspring.values())[:target_size]
         if len(self.offspring) < target_size:
             self.log.warn(
-                'Only %d unique offspring could be generated for target size %d'
+                'Only %d usable unique offspring could be generated for target size %d'
                 % (len(self.offspring), target_size)
+            )
+        if len(self.offspring) < minimum_required_size:
+            raise RuntimeError(
+                'The guided candidate pool contains only %d unknown unique architectures, '
+                'but at least %d are required. Increase candidate_multiplier or mutation diversity.'
+                % (len(self.offspring), minimum_required_size)
             )
 
         for index, individual in enumerate(self.offspring):
@@ -476,10 +506,7 @@ class Mutation(object):
     
         # Pooling unit check
         if type_ == 2:
-            num_exist_pool_units = 0
-            for unit in indi.units:
-                if unit.type == 2:
-                    num_exist_pool_units += 1
+            num_exist_pool_units = sum(1 for unit in indi.units if unit.type == 2)
 
 
             """
@@ -519,33 +546,35 @@ class Mutation(object):
     
         """
 
-        if num_exist_pool_units > StatusUpdateTool.get_pool_limit()[1] - 1:
-            # Havuzlama limiti aşıldıysa, POOLING dışında kalan modüller listesi
-            valid_types = [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
-            type_names = {
-                1: 'RESNET',
-                3: 'DENSENET',
-                4: 'INCEPTION',
-                5: 'SE-INCEPTION',
-                6: 'CBAM-INCEPTION',
-                7: 'CA-INCEPTION',
-                8: 'SE-RESNET',
-                9: 'CBAM-RESNET',
-                10: 'CA-RESNET',
-                11: 'SE-DENSENET',
-                12: 'CBAM-DENSENET',
-                13: 'CA-DENSENET',
-                14: 'ECA-INCEPTION',
-                15: 'ECA-RESNET',
-                16: 'ECA-DENSENET',
-            }
-        
-            type_ = random.choice(valid_types)
-            type_name = type_names[type_]
-        
-            self.log.info(
-                'The added unit is changed to %s because the existing number of POOLING exceeds %d, limit size: %d' %
-                (type_name, num_exist_pool_units, StatusUpdateTool.get_pool_limit()[1]))
+            if num_exist_pool_units >= StatusUpdateTool.get_pool_limit()[1]:
+                # Select a non-pooling unit when the pooling limit is already full.
+                valid_types = [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+                type_names = {
+                    1: 'RESNET',
+                    3: 'DENSENET',
+                    4: 'INCEPTION',
+                    5: 'SE-INCEPTION',
+                    6: 'CBAM-INCEPTION',
+                    7: 'CA-INCEPTION',
+                    8: 'SE-RESNET',
+                    9: 'CBAM-RESNET',
+                    10: 'CA-RESNET',
+                    11: 'SE-DENSENET',
+                    12: 'CBAM-DENSENET',
+                    13: 'CA-DENSENET',
+                    14: 'ECA-INCEPTION',
+                    15: 'ECA-RESNET',
+                    16: 'ECA-DENSENET',
+                }
+
+                type_ = random.choice(valid_types)
+                type_name = type_names[type_]
+
+                self.log.info(
+                    'The added unit is changed to %s because the pooling limit is full. '
+                    'Existing pooling units: %d, limit: %d' %
+                    (type_name, num_exist_pool_units, StatusUpdateTool.get_pool_limit()[1])
+                )
         
             
     
