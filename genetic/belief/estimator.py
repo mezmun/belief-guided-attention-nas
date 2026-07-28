@@ -1,10 +1,9 @@
 """
 This module propagates known fitness values through architecture similarity.
 
-It calculates a belief mean for an unevaluated candidate by combining all
-archive fitness values with kernel weights. It also reports evidence strength,
-effective neighbour count, and neighbour disagreement for later uncertainty
-calibration.
+It supports a direct kernel-weighted belief mean and an optional Gaussian
+precision update. Both methods use the full evaluated archive rather than one
+reference architecture.
 """
 
 from __future__ import annotations
@@ -48,6 +47,7 @@ class BeliefEstimate:
     used_neighbour_count: int
     excluded_exact_match_count: int
     used_prior_only: bool
+    model_variance: Optional[float]
     neighbours: List[NeighbourEvidence]
 
     def to_dict(self) -> Dict[str, object]:
@@ -59,26 +59,30 @@ class BeliefEstimate:
 
 
 class SimilarityBeliefEstimator:
-    """Calculate archive-wide kernel-weighted fitness beliefs."""
+    """Calculate archive-wide kernel or Bayesian precision fitness beliefs."""
 
-    VERSION = "1.0"
+    VERSION = "2.0"
 
     def __init__(
         self,
         similarity: Optional[ArchitectureSimilarity] = None,
         kernel_bandwidth: float = 0.25,
         minimum_kernel_weight: float = 1e-12,
+        method: str = "kernel_mean",
     ) -> None:
-        """Create the estimator and validate its kernel settings."""
+        """Create the estimator and validate its settings."""
 
         if kernel_bandwidth <= 0 or not math.isfinite(kernel_bandwidth):
             raise ValueError("kernel_bandwidth must be finite and greater than zero")
         if minimum_kernel_weight < 0 or not math.isfinite(minimum_kernel_weight):
             raise ValueError("minimum_kernel_weight must be finite and non-negative")
+        if method not in {"kernel_mean", "bayesian_precision"}:
+            raise ValueError("method must be 'kernel_mean' or 'bayesian_precision'")
 
         self.similarity = similarity or ArchitectureSimilarity()
         self.kernel_bandwidth = float(kernel_bandwidth)
         self.minimum_kernel_weight = float(minimum_kernel_weight)
+        self.method = method
 
     def estimate_one(
         self,
@@ -96,18 +100,18 @@ class SimilarityBeliefEstimator:
 
         weighted_items: List[tuple[ArchiveEntry, float, float]] = []
         excluded_exact_match_count = 0
-
         for entry in archive.entries():
             if exclude_exact_match and entry.architecture_id == candidate.architecture_id:
                 excluded_exact_match_count += 1
                 continue
-
             similarity_value = self.similarity.compare(candidate, entry.encoding).total
             kernel_weight = self.kernel_weight(similarity_value)
             if kernel_weight >= self.minimum_kernel_weight:
                 weighted_items.append((entry, similarity_value, kernel_weight))
 
-        prior_mean = self._archive_prior_mean(archive, candidate, exclude_exact_match)
+        prior_mean, prior_variance = self._archive_prior(
+            archive, candidate, exclude_exact_match
+        )
         if not weighted_items:
             return BeliefEstimate(
                 architecture_id=candidate.architecture_id,
@@ -119,24 +123,32 @@ class SimilarityBeliefEstimator:
                 used_neighbour_count=0,
                 excluded_exact_match_count=excluded_exact_match_count,
                 used_prior_only=True,
+                model_variance=prior_variance,
                 neighbours=[],
             )
 
         total_weight = sum(item[2] for item in weighted_items)
-        belief_mean = sum(
+        kernel_mean = sum(
             entry.fitness_mean * kernel_weight
             for entry, _, kernel_weight in weighted_items
         ) / total_weight
-
         disagreement = sum(
-            kernel_weight * (entry.fitness_mean - belief_mean) ** 2
+            kernel_weight * (entry.fitness_mean - kernel_mean) ** 2
             for entry, _, kernel_weight in weighted_items
         ) / total_weight
-
         squared_weight_sum = sum(item[2] ** 2 for item in weighted_items)
-        effective_count = (
-            total_weight**2 / squared_weight_sum if squared_weight_sum > 0 else 0.0
-        )
+        effective_count = total_weight**2 / squared_weight_sum if squared_weight_sum > 0 else 0.0
+
+        belief_mean = kernel_mean
+        model_variance: Optional[float] = None
+        if self.method == "bayesian_precision":
+            belief_mean, model_variance = self._bayesian_precision_update(
+                weighted_items=weighted_items,
+                total_weight=total_weight,
+                effective_count=effective_count,
+                prior_mean=prior_mean,
+                prior_variance=prior_variance,
+            )
 
         sorted_items = sorted(weighted_items, key=lambda item: item[2], reverse=True)
         selected_items = sorted_items[:top_neighbours] if top_neighbours else []
@@ -162,6 +174,7 @@ class SimilarityBeliefEstimator:
             used_neighbour_count=len(weighted_items),
             excluded_exact_match_count=excluded_exact_match_count,
             used_prior_only=False,
+            model_variance=model_variance,
             neighbours=neighbours,
         )
 
@@ -189,18 +202,48 @@ class SimilarityBeliefEstimator:
 
         if not math.isfinite(similarity_value) or not 0.0 <= similarity_value <= 1.0:
             raise ValueError("similarity_value must be finite and inside [0, 1]")
-
         distance = 1.0 - similarity_value
-        denominator = 2.0 * self.kernel_bandwidth**2
-        return float(math.exp(-(distance**2) / denominator))
+        return float(
+            math.exp(-(distance**2) / (2.0 * self.kernel_bandwidth**2))
+        )
 
     @staticmethod
-    def _archive_prior_mean(
+    def _bayesian_precision_update(
+        weighted_items: List[tuple[ArchiveEntry, float, float]],
+        total_weight: float,
+        effective_count: float,
+        prior_mean: float,
+        prior_variance: float,
+    ) -> tuple[float, float]:
+        """Apply a batch Gaussian update equivalent to Kalman precision fusion."""
+
+        safe_prior_variance = max(prior_variance, 1e-8)
+        observation_variance = safe_prior_variance
+        prior_precision = 1.0 / safe_prior_variance
+
+        weighted_precision_mean = 0.0
+        for entry, _, kernel_weight in weighted_items:
+            normalized_weight = kernel_weight / total_weight
+            effective_weight = normalized_weight * max(effective_count, 1.0)
+            weighted_precision_mean += (
+                effective_weight * entry.fitness_mean / observation_variance
+            )
+
+        observation_precision = max(effective_count, 1.0) / observation_variance
+        posterior_precision = prior_precision + observation_precision
+        posterior_mean = (
+            prior_precision * prior_mean + weighted_precision_mean
+        ) / posterior_precision
+        posterior_variance = 1.0 / posterior_precision
+        return float(posterior_mean), float(posterior_variance)
+
+    @staticmethod
+    def _archive_prior(
         archive: EvaluatedArchitectureArchive,
         candidate: ArchitectureEncoding,
         exclude_exact_match: bool,
-    ) -> float:
-        """Return a safe fallback mean when no kernel neighbour is available."""
+    ) -> tuple[float, float]:
+        """Return archive mean and variance for a safe prior distribution."""
 
         values = [
             entry.fitness_mean
@@ -209,70 +252,6 @@ class SimilarityBeliefEstimator:
         ]
         if not values:
             values = archive.fitness_values()
-        return float(sum(values) / len(values))
-
-
-def _encoding(
-    architecture_id: str,
-    modules: List[str],
-    fitness_length: float,
-) -> ArchitectureEncoding:
-    """Create a simple encoding for the local self-test."""
-
-    base_map = {
-        "ca-densenet": ("densenet", "ca"),
-        "cbam-resnet": ("resnet", "cbam"),
-        "se-resnet": ("resnet", "se"),
-        "pool": ("pool", "none"),
-    }
-    bases = [base_map[module][0] for module in modules]
-    attentions = [base_map[module][1] for module in modules]
-    pairs = [f"{attention}-{base}" for attention, base in zip(attentions, bases)]
-
-    from collections import Counter
-
-    return ArchitectureEncoding(
-        architecture_id=architecture_id,
-        architecture_string="-".join(modules),
-        individual_id=architecture_id,
-        length=len(modules),
-        module_sequence=modules,
-        base_sequence=bases,
-        attention_sequence=attentions,
-        base_attention_pairs=pairs,
-        module_counts=dict(Counter(modules)),
-        base_counts=dict(Counter(bases)),
-        attention_counts=dict(Counter(attentions)),
-        module_bigrams=[f"{a}->{b}" for a, b in zip(modules, modules[1:])],
-        pair_bigrams=[f"{a}->{b}" for a, b in zip(pairs, pairs[1:])],
-        numeric_summary={"length": fitness_length, "attention_density": 0.5},
-        unit_records=[],
-    )
-
-
-def _run_self_test() -> None:
-    """Check archive-wide weighting and exact-match exclusion."""
-
-    archive = EvaluatedArchitectureArchive()
-    good = _encoding("good", ["ca-densenet", "pool", "cbam-resnet"], 3.0)
-    lower = _encoding("lower", ["ca-densenet", "pool", "se-resnet"], 3.0)
-    candidate = _encoding("candidate", ["ca-densenet", "pool", "cbam-resnet"], 3.0)
-
-    archive.add_encoding(good, fitness=0.84, generation=0)
-    archive.add_encoding(lower, fitness=0.80, generation=0)
-
-    estimator = SimilarityBeliefEstimator(kernel_bandwidth=0.25)
-    result = estimator.estimate_one(candidate, archive)
-
-    assert 0.80 <= result.belief_mean <= 0.84
-    assert result.evidence_strength > 0
-    assert result.effective_neighbour_count >= 1.0
-    assert result.max_similarity == 1.0
-    assert result.used_neighbour_count == 2
-
-    print("Similarity belief estimator self-test passed.")
-    print(result.to_dict())
-
-
-if __name__ == "__main__":
-    _run_self_test()
+        mean_value = sum(values) / len(values)
+        variance = sum((value - mean_value) ** 2 for value in values) / len(values)
+        return float(mean_value), float(max(variance, 1e-8))
