@@ -95,12 +95,20 @@ class BeliefSelector:
         ucb_kappa: float,
         quotas: Sequence[float],
     ) -> List[SelectionDecision]:
-        """Select disjoint subsets using normalized largest-remainder quotas."""
+        """Select disjoint quota groups and sample the audit group first."""
 
         if len(quotas) != 4:
             raise ValueError("quota selection requires four quota values")
         counts = self._quota_counts(budget, quotas)
         selected: Dict[str, SelectionDecision] = {}
+
+        # Draw the audit subset from the complete candidate pool first.
+        # This keeps the audit sample independent from belief-based ranking.
+        random_needed = min(counts[3], len(items))
+        for item in self.random.sample(items, random_needed):
+            selected[item.encoding.architecture_id] = SelectionDecision(
+                item, "random_audit", 0.0
+            )
 
         ranked_groups: List[Tuple[str, List[CandidateAssessment], Any]] = [
             (
@@ -128,24 +136,24 @@ class BeliefSelector:
 
         for group_index, (reason, ordered, score_fn) in enumerate(ranked_groups):
             needed = counts[group_index]
+            group_count = 0
             for item in ordered:
                 key = item.encoding.architecture_id
                 if key in selected:
                     continue
                 selected[key] = SelectionDecision(item, reason, float(score_fn(item)))
-                if sum(decision.reason == reason for decision in selected.values()) >= needed:
+                group_count += 1
+                if group_count >= needed:
                     break
 
-        remaining = [item for item in items if item.encoding.architecture_id not in selected]
-        random_needed = min(counts[3], len(remaining))
-        for item in self.random.sample(remaining, random_needed):
-            selected[item.encoding.architecture_id] = SelectionDecision(
-                item, "random_audit", 0.0
-            )
-
         if len(selected) < budget:
-            remaining = [item for item in items if item.encoding.architecture_id not in selected]
-            ordered = sorted(remaining, key=lambda item: item.belief.belief_mean, reverse=True)
+            remaining = [
+                item for item in items
+                if item.encoding.architecture_id not in selected
+            ]
+            ordered = sorted(
+                remaining, key=lambda item: item.belief.belief_mean, reverse=True
+            )
             for item in ordered[: budget - len(selected)]:
                 selected[item.encoding.architecture_id] = SelectionDecision(
                     item, "mean_fill", item.belief.belief_mean
