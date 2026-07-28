@@ -1,0 +1,1534 @@
+
+import configparser
+import os
+import numpy as np
+from subprocess import Popen, PIPE
+from genetic.population import get_inception_params, Population, Individual, DenseUnit, ResUnit, PoolUnit, InceptionBlock, InceptionSEBlock, CBAMInceptionBlock, CAInceptionBlock, SEResNetUnit, CBAMResNetUnit, CAResNetUnit, SEDenseNetUnit, CBAMDenseNetUnit, CADenseNetUnit, ECAInceptionBlock, ECAResNetUnit, ECADenseNetUnit
+import logging
+import sys
+import multiprocessing
+import time
+import random
+
+
+class StatusUpdateTool(object):
+
+    @classmethod
+    def is_dataset_directory_set(cls):
+        """
+        Reads the 'dataset_directory' key from the 'settings' section in the global.ini file
+        and returns the directory path.
+        """
+        directory = cls.__read_ini_file('settings', 'dataset_directory')
+        return directory 
+        
+    # New function to check if early stopping is enabled
+    @classmethod
+    def is_early_stopping_enabled(cls):
+        """
+        This method reads the 'early_stopping' key from the 'settings' section in the global.ini file
+        and returns True if it is set to '1' (enabled), or False otherwise.
+        """
+        rs = cls.__read_ini_file('settings', 'early_stopping')
+        
+        if int(rs) == 1:
+            return True
+        else:
+            return False
+        #return rs == '1'  # If 'early_stopping' is '1', it returns True; otherwise, False.
+
+    # New function: Is Label Smoothing enabled?
+    @classmethod
+    def is_label_smoothing_enabled(cls):
+        """
+        Reads the 'label_smoothing' key from the 'settings' section in the global.ini file
+        and returns True if it is set to '1', or False otherwise.
+        """
+        rs = cls.__read_ini_file('settings', 'label_smoothing')
+        
+        if int(rs) == 1:
+            return True
+        else:
+            return False
+        #return rs == '1'  # Returns True if 'label_smoothing' is '1'; otherwise, False.
+
+    # New function: Is Gradient Clipping enabled?
+    @classmethod
+    def is_gradient_clipping_enabled(cls):
+        """
+        Reads the 'gradient_clipping' key from the 'settings' section in the global.ini file
+        and returns True if it is set to '1', or False otherwise.
+        """
+        rs = cls.__read_ini_file('settings', 'gradient_clipping')
+        
+        if int(rs) == 1:
+            return True
+        else:
+            return False
+        #return rs == '1'  # Returns True if 'gradient_clipping' is '1'; otherwise, False.
+
+    # New function: Is Horovod enabled?
+    @classmethod
+    def is_horovod_enabled(cls):
+        """
+        This method reads the 'horovod' key from the 'settings' section in the global.ini file
+        and returns True if it is set to '1' (enabled), or False otherwise.
+        """
+        #rs = cls.__read_ini_file('settings', 'horovod')
+        rs = cls.__read_ini_file('settings', 'horovod').strip()
+        
+        if int(rs) == 1:
+            return True
+        else:
+            return False
+        #return rs == '1'  # Returns True if 'horovod' is '1'; otherwise, False.
+
+
+    
+
+    
+    @classmethod
+    def clear_config(cls):
+        thisfolder = os.path.dirname(os.path.abspath(__file__))
+        initfile = os.path.join(thisfolder, 'global.ini')
+        config = configparser.ConfigParser()
+        #config.read('global.ini')
+        config.read(initfile)
+        secs = config.sections()
+        for sec_name in secs:
+            if sec_name == 'evolution_status' or sec_name == 'gpu_running_status':
+                item_list = config.options(sec_name)
+                for item_name in item_list:
+                    config.set(sec_name, item_name, " ")
+        #config.write(open('global.ini', 'w'))
+        config.write(open(initfile, 'w'))
+        
+
+    @classmethod
+    def __write_ini_file(cls, section, key, value):
+        thisfolder = os.path.dirname(os.path.abspath(__file__))
+        initfile = os.path.join(thisfolder, 'global.ini')
+        config = configparser.ConfigParser()
+        config.read(initfile)
+        #config.read('global.ini')
+
+        config.set(section, key, value)
+        #config.write(open('global.ini', 'w'))
+        config.write(open(initfile, 'w'))
+    @classmethod
+    def __read_ini_file(cls, section, key):
+        thisfolder = os.path.dirname(os.path.abspath(__file__))
+        #print(thisfolder)
+        initfile = os.path.join(thisfolder, 'global.ini')
+        #print(initfile)
+        config = configparser.ConfigParser()
+        #config.read('global.ini')
+        config.read(initfile)
+        #print(config.get(section, key))
+        return config.get(section, key)
+
+    @classmethod
+    def begin_evolution(cls):
+        section = 'evolution_status'
+        key = 'IS_RUNNING'
+        cls.__write_ini_file(section, key, "1")
+        print("evolution status IS_RUNNING has changed from 0 to 1 in global.ini file")
+    @classmethod
+    def end_evolution(cls):
+        section = 'evolution_status'
+        key = 'IS_RUNNING'
+        cls.__write_ini_file(section, key, "0")
+
+    @classmethod
+    def is_evolution_running(cls):
+        rs = cls.__read_ini_file('evolution_status', 'IS_RUNNING')
+        if rs == '1':
+            return True
+        else:
+            return False
+
+
+    @classmethod
+    def get_resnet_limit(cls):
+        rs = cls.__read_ini_file('network', 'resnet_limit')
+        resnet_limit = []
+        for i in rs.split(','):
+            resnet_limit.append(int(i))
+        return resnet_limit[0], resnet_limit[1]
+    @classmethod
+    def get_inception_limit(cls):
+        rs = cls.__read_ini_file('network', 'inception_limit')
+        inception_limit = []
+        for i in rs.split(','):
+            inception_limit.append(int(i))
+        return inception_limit[0], inception_limit[1]
+    @classmethod
+    def get_pool_limit(cls):
+        rs = cls.__read_ini_file('network', 'pool_limit')
+        pool_limit = []
+        for i in rs.split(','):
+            pool_limit.append(int(i))
+        return pool_limit[0], pool_limit[1]
+    @classmethod
+    def get_densenet_limit(cls):
+        rs = cls.__read_ini_file('network', 'densenet_limit')
+        densenet_limit = []
+        for i in rs.split(','):
+            densenet_limit.append(int(i))
+        return densenet_limit[0], densenet_limit[1]
+
+    @classmethod
+    def get_resnet_unit_length_limit(cls):
+        rs = cls.__read_ini_file('resnet_configuration', 'unit_length_limit')
+        resnet_unit_length_limit = []
+        for i in rs.split(','):
+            resnet_unit_length_limit.append(int(i))
+        return resnet_unit_length_limit[0], resnet_unit_length_limit[1]
+
+    @classmethod
+    def get_densenet_k_list(cls):
+        rs = cls.__read_ini_file('densenet_configuration', 'k_list')
+        k_list = []
+        for i in rs.split(','):
+            k_list.append(int(i))
+        return k_list
+
+    @classmethod
+    def get_densenet_k12(cls):
+        rs = cls.__read_ini_file('densenet_configuration', 'k_12')
+        k12_limit = []
+        for i in rs.split(','):
+            k12_limit.append(int(i))
+        return k12_limit[0], k12_limit[1], k12_limit[2]
+
+    @classmethod
+    def get_densenet_k20(cls):
+        rs = cls.__read_ini_file('densenet_configuration', 'k_20')
+        k20_limit = []
+        for i in rs.split(','):
+            k20_limit.append(int(i))
+        return k20_limit[0], k20_limit[1], k20_limit[2]
+
+    @classmethod
+    def get_densenet_k40(cls):
+        rs = cls.__read_ini_file('densenet_configuration', 'k_40')
+        k40_limit = []
+        for i in rs.split(','):
+            k40_limit.append(int(i))
+        return k40_limit[0], k40_limit[1], k40_limit[2]
+
+    @classmethod
+    def get_output_channel(cls):
+        rs = cls.__read_ini_file('network', 'output_channel')
+        channels = []
+        for i in rs.split(','):
+            channels.append(int(i))
+        return channels
+    @classmethod
+    def get_input_channel(cls):
+        rs = cls.__read_ini_file('network', 'input_channel')
+        return int(rs)
+    @classmethod
+    def get_num_class(cls):
+        rs = cls.__read_ini_file('network', 'num_class')
+        return int(rs)
+    @classmethod
+    def get_input_size(cls):
+        rs = cls.__read_ini_file('network', 'input_size')
+        return int(rs)
+
+    @classmethod
+    def get_pop_size(cls):
+        rs = cls.__read_ini_file('settings', 'pop_size')
+        return int(rs)
+    @classmethod
+    def get_epoch_size(cls):
+        rs = cls.__read_ini_file('network', 'epoch')
+        return int(rs)
+    @classmethod
+    def get_individual_max_length(cls):
+        rs = cls.__read_ini_file('network', 'max_length')
+        return int(rs)
+
+    @classmethod
+    def get_genetic_probability(cls):
+        rs = cls.__read_ini_file('settings', 'genetic_prob').split(',')
+        p = [float(i) for i in rs]
+        return p
+
+
+    @classmethod
+    def get_init_params(cls):
+        params = {}
+        params['pop_size'] = cls.get_pop_size()
+        params['max_len'] = cls.get_individual_max_length()
+        params['image_channel'] = cls.get_input_channel()
+        params['output_channel'] = cls.get_output_channel()
+        params['genetic_prob'] = cls.get_genetic_probability()
+
+        params['min_resnet'], params['max_resnet'] = cls.get_resnet_limit()
+        params['min_pool'], params['max_pool'] = cls.get_pool_limit()
+        params['min_densenet'], params['max_densenet'] = cls.get_densenet_limit()
+        params['min_inception'], params['max_inception'] = cls.get_inception_limit()
+
+        params['min_resnet_unit'], params['max_resnet_unit'] = cls.get_resnet_unit_length_limit()
+
+        params['k_list'] = cls.get_densenet_k_list()
+        params['max_k12_input_channel'], params['min_k12'], params['max_k12'] = cls.get_densenet_k12()
+        params['max_k20_input_channel'], params['min_k20'], params['max_k20'] = cls.get_densenet_k20()
+        params['max_k40_input_channel'], params['min_k40'], params['max_k40'] = cls.get_densenet_k40()
+
+        return params
+
+    @classmethod
+    def get_mutation_probs_for_each(cls):
+        """
+        defined the particular probabilities for each type of mutation
+        the mutation occurs at:
+        --    add
+        -- remove
+        --  alter
+        """
+        rs = cls.__read_ini_file('settings', 'mutation_probs').split(',')
+        assert len(rs) == 3
+        mutation_prob_list = [float(i) for i in rs]
+        return mutation_prob_list
+
+
+
+class Log(object):
+    _logger = None
+    @classmethod
+    def __get_logger(cls):
+        if Log._logger is None:
+            logger = logging.getLogger("EvoCNN")
+            formatter = logging.Formatter('%(asctime)s %(levelname)-8s: %(message)s')
+            file_handler = logging.FileHandler("main.log")
+            file_handler.setFormatter(formatter)
+
+            console_handler = logging.StreamHandler(sys.stdout)
+            console_handler.formatter = formatter
+            logger.addHandler(file_handler)
+            logger.addHandler(console_handler)
+            logger.setLevel(logging.INFO)
+            Log._logger = logger
+            return logger
+        else:
+            return Log._logger
+
+    @classmethod
+    def info(cls, _str):
+        cls.__get_logger().info(_str)
+    @classmethod
+    def warn(cls, _str):
+        cls.__get_logger().warn(_str)
+
+##############################################################################################3
+
+import subprocess
+
+class GPUTools:
+    @classmethod
+    def get_gpu_info(cls):
+        """nvidia-smi query özelliği ile GPU bilgilerini al."""
+        result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=index,memory.used,memory.total,utilization.gpu',
+             '--format=csv,noheader,nounits'],
+            stdout=subprocess.PIPE, text=True
+        )
+        output = result.stdout.strip()
+        gpu_info = []
+        for line in output.split('\n'):
+            index, mem_used, mem_total, util = line.split(', ')
+            gpu_info.append({
+                'id': int(index),
+                'memory_used': int(mem_used),
+                'memory_total': int(mem_total),
+                'utilization': int(util)
+            })
+        return gpu_info
+
+    @classmethod
+    def detect_availabel_gpu_id(cls, memory_threshold=500, utilization_threshold=10):
+        gpu_info = cls.get_gpu_info()
+        for gpu in gpu_info:
+            if gpu['memory_used'] < memory_threshold and gpu['utilization'] < utilization_threshold:
+                print(f"GPU_QUERY-Selecting GPU#{gpu['id']}")
+                return gpu['id']
+        print("GPU_QUERY-No available GPU")
+        return None
+
+    @classmethod
+    def all_gpu_available(cls, memory_threshold=500, utilization_threshold=10):
+        gpu_info = cls.get_gpu_info()
+        available_gpus = [
+            gpu for gpu in gpu_info
+            if gpu['memory_used'] < memory_threshold and gpu['utilization'] < utilization_threshold
+        ]
+        if available_gpus:
+            print(f"GPU_QUERY-Available GPUs: {[gpu['id'] for gpu in available_gpus]}")
+            return True
+        else:
+            print("GPU_QUERY-No available GPU")
+            return False
+
+class Utils(object):
+    _lock = multiprocessing.Lock()
+    @classmethod
+    def get_lock_for_write_fitness(cls):
+        return cls._lock
+    @classmethod
+    def load_cache_data(cls):
+        file_name = './populations/cache.txt'
+        _map = {}
+        if os.path.exists(file_name):
+            f = open(file_name, 'r')
+            for each_line in f:
+                rs_ = each_line.strip().split(';')
+                _map[rs_[0]] = '%.5f'%(float(rs_[1]))
+            f.close()
+        return _map
+
+    @classmethod
+    def save_fitness_to_cache(cls, individuals):
+        _map = cls.load_cache_data()
+        for indi in individuals:
+            _key,_str = indi.uuid()
+            _acc = indi.acc
+            if _key not in _map:
+                Log.info('Add record into cache, id:%s, acc:%.5f'%(_key, _acc))
+                f = open('./populations/cache.txt', 'a+')
+                _str = '%s;%.5f;%s\n'%(_key, _acc, _str)
+                f.write(_str)
+                f.close()
+                _map[_key] = _acc
+
+
+    @classmethod
+    def save_population_at_begin(cls, _str, gen_no):
+        file_name = './populations/begin_%02d.txt'%(gen_no)
+        with open(file_name, 'w') as f:
+            f.write(_str)
+    @classmethod
+    def save_population_after_crossover(cls, _str, gen_no):
+        file_name = './populations/crossover_%02d.txt'%(gen_no)
+        with open(file_name, 'w') as f:
+            f.write(_str)
+
+    @classmethod
+    def save_population_after_mutation(cls, _str, gen_no):
+        file_name = './populations/mutation_%02d.txt'%(gen_no)
+        with open(file_name, 'w') as f:
+            f.write(_str)
+
+
+    @classmethod
+    def get_newest_file_based_on_prefix(cls, prefix):
+        id_list = []
+        for _, _, file_names in os.walk('./populations'):
+            for file_name in file_names:
+                if file_name.startswith(prefix):
+                    id_list.append(int(file_name[6:8]))
+        if len(id_list) == 0:
+            return None
+        else:
+            return np.max(id_list)
+
+
+    """
+      This method is responsible for loading a saved population of individuals from a file.
+      It reads the file line by line, identifies and reconstructs various types of layers
+      (DenseNet, ResNet, pooling, Inception) into their respective objects,
+      and assembles these layers into individuals, which are then added to the population.
+      This method is crucial for restoring a population's state from a previous generation in an evolutionary algorithm.
+
+    """
+    @classmethod
+    def load_population(cls, prefix, gen_no):
+
+      
+        file_name = './populations/%s_%02d.txt'%(prefix, np.min(gen_no))
+        params = StatusUpdateTool.get_init_params()
+        pop = Population(params, gen_no)
+        f = open(file_name)
+        indi_start_line = f.readline().strip()
+        while indi_start_line.startswith('indi'):
+            indi_no = indi_start_line[5:]
+            #print("indi no of loaded pop indi= ",indi_no,flush=True)
+            indi = Individual(params, indi_no)
+            for line in f:
+                line = line.strip()
+                if line.startswith('--'):
+                    indi_start_line = f.readline().strip()
+                    break
+                else:
+                    if line.startswith('Acc'):
+                        indi.acc = float(line[4:])
+                    elif line.startswith('[densenet,'):
+                        data_maps = line[10:-1].split(',', 5)
+                        densenet_params = {}
+                        for data_item in data_maps:
+                            _key, _value = data_item.split(":")
+                            if _key == 'number':
+                                indi.number_id = int(_value)
+                                densenet_params['number'] = int(_value)
+                            elif _key == 'amount':
+                                densenet_params['amount'] = int(_value)
+                            elif _key == 'k':
+                                densenet_params['k'] = int(_value)
+                            elif _key == 'in':
+                                densenet_params['in_channel'] = int(_value)
+                            elif _key == 'out':
+                                densenet_params['out_channel'] = int(_value)
+                            else:
+                                raise ValueError('Unknown key for load conv unit, key_name:%s'%( _key))
+                        # get max_input_channel
+                        if densenet_params['k'] == 12:
+                            rs = StatusUpdateTool.get_densenet_k12()
+                            densenet_params['max_input_channel'] = rs[0]
+                        elif densenet_params['k'] == 20:
+                            rs = StatusUpdateTool.get_densenet_k20()
+                            densenet_params['max_input_channel'] = rs[0]
+                        elif densenet_params['k'] == 40:
+                            rs = StatusUpdateTool.get_densenet_k40()
+                            densenet_params['max_input_channel'] = rs[0]
+                        densenet = DenseUnit(number=densenet_params['number'], amount=densenet_params['amount'],\
+                                             k=densenet_params['k'], max_input_channel=densenet_params['max_input_channel'], \
+                                             in_channel=densenet_params['in_channel'], out_channel=densenet_params['out_channel'])
+                        indi.units.append(densenet)
+                    elif line.startswith('[resnet,'):
+                        data_maps = line[8:-1].split(',', 4)
+                        resnet_params = {}
+                        for data_item in data_maps:
+                            _key, _value = data_item.split(":")
+                            if _key == 'number':
+                                indi.number_id = int(_value)
+                                resnet_params['number'] = int(_value)
+                            elif _key == 'amount':
+                                resnet_params['amount'] = int(_value)
+                            elif _key == 'in':
+                                resnet_params['in_channel'] = int(_value)
+                            elif _key == 'out':
+                                resnet_params['out_channel'] = int(_value)
+                            else:
+                                raise ValueError('Unknown key for load conv unit, key_name:%s'%( _key))
+                        resnet = ResUnit(number=resnet_params['number'], amount=resnet_params['amount'], \
+                                         in_channel=resnet_params['in_channel'], out_channel=resnet_params['out_channel'])
+                        indi.units.append(resnet)
+                    elif line.startswith('[pool'):
+                        pool_params = {}
+                        for data_item in line[6:-1].split(','):
+                            _key, _value = data_item.split(':')
+                            if _key =='number':
+                                indi.number_id = int(_value)
+                                pool_params['number'] = int(_value)
+                            elif _key == 'type':
+                                pool_params['max_or_avg'] = float(_value)
+                            else:
+                                raise ValueError('Unknown key for load pool unit, key_name:%s'%( _key))
+                        pool = PoolUnit(pool_params['number'], pool_params['max_or_avg'])
+                        indi.units.append(pool)
+                    elif line.startswith('[inception,'):
+                        inception_params = {}
+                        data_maps = line[11:-1].split(',', 3)
+                        for data_item in data_maps:
+                            print(data_item)
+                            _key, _value = data_item.split(":")
+                            if _key == 'number':
+                                indi.number_id = int(_value)
+                                inception_params['number'] = int(_value)
+                            elif _key == 'in':
+                                inception_params['in_channel'] = int(_value)
+                            elif _key == 'out':
+                                inception_params['out_channel'] = int(_value)
+                            elif _key == 'type':
+                                inception_params['inception_type'] = str(_value)
+                            else:
+                                raise ValueError('Unknown key for load conv unit, key_name:%s'%( _key))
+
+
+                        if inception_params['inception_type'] == "3a":
+                            inception = InceptionBlock(number=inception_params['number'],\
+                                            in_channel=inception_params['in_channel'],  inception_type=inception_params['inception_type'], out_1x1=64, red_3x3=96, out_3x3=128, red_5x5=16, out_5x5=32,\
+                                            out_1x1pool=32)
+                        elif inception_params['inception_type'] == "3b":
+                            inception = InceptionBlock(number=inception_params['number'],\
+                                            in_channel=inception_params['in_channel'],  inception_type=inception_params['inception_type'], out_1x1=128, red_3x3=128, out_3x3=192, red_5x5=32, out_5x5=96,\
+                                            out_1x1pool=64)
+                        elif inception_params['inception_type'] == "4a":
+                            inception = InceptionBlock(number=inception_params['number'],\
+                                            in_channel=inception_params['in_channel'],  inception_type=inception_params['inception_type'], out_1x1=192, red_3x3=96, out_3x3=208, red_5x5=16, out_5x5=48,\
+                                            out_1x1pool=64)
+                        elif inception_params['inception_type'] == "4b":
+                            inception = InceptionBlock(number=inception_params['number'],\
+                                            in_channel=inception_params['in_channel'],  inception_type=inception_params['inception_type'], out_1x1=160, red_3x3=112, out_3x3=224, red_5x5=24, out_5x5=64,\
+                                            out_1x1pool=64)
+                        elif inception_params['inception_type'] == "4c":
+                            inception = InceptionBlock(number=inception_params['number'],\
+                                            in_channel=inception_params['in_channel'],  inception_type=inception_params['inception_type'], out_1x1=128, red_3x3=128, out_3x3=256, red_5x5=24, out_5x5=64,\
+                                            out_1x1pool=64)
+                        elif inception_params['inception_type'] == "4d":
+                            inception = InceptionBlock(number=inception_params['number'],\
+                                            in_channel=inception_params['in_channel'],  inception_type=inception_params['inception_type'], out_1x1=112, red_3x3=144, out_3x3=288, red_5x5=32, out_5x5=64,\
+                                            out_1x1pool=64)
+                        elif inception_params['inception_type'] == "4e":
+                            inception = InceptionBlock(number=inception_params['number'],\
+                                            in_channel=inception_params['in_channel'],  inception_type=inception_params['inception_type'], out_1x1=256, red_3x3=160, out_3x3=320, red_5x5=32, out_5x5=128,\
+                                            out_1x1pool=128)
+                        elif inception_params['inception_type'] == "5a":
+                            inception = InceptionBlock(number=inception_params['number'],\
+                                            in_channel=inception_params['in_channel'],  inception_type=inception_params['inception_type'], out_1x1=256, red_3x3=160, out_3x3=320, red_5x5=32, out_5x5=128,\
+                                            out_1x1pool=128)
+                        else:
+                            inception = InceptionBlock(number=inception_params['number'],\
+                                            in_channel=inception_params['in_channel'],  inception_type=inception_params['inception_type'], out_1x1=384, red_3x3=192, out_3x3=384, red_5x5=48, out_5x5=128,\
+                                            out_1x1pool=128)
+                        print("inception params", inception_params['inception_type'])
+
+                        indi.units.append(inception)
+
+########################################################################################################## newly added
+
+                    
+
+                    elif line.startswith('[inception-se'):
+                        inception_se_params = {}
+                        data_maps = line[14:-1].split(',', 4)
+                        for data_item in data_maps:
+                            _key, _value = data_item.split(":")
+                            if _key == 'number':
+                                indi.number_id = int(_value)
+                                inception_se_params['number'] = int(_value)
+                            elif _key == 'in':
+                                inception_se_params['in_channel'] = int(_value)
+                            elif _key == 'out':
+                                inception_se_params['out_channel'] = int(_value)
+                            elif _key == 'type':
+                                inception_se_params['inception_type'] = str(_value)
+                            elif _key == 'reduction_ratio':
+                                inception_se_params['reduction_ratio'] = int(_value)
+                            else:
+                                raise ValueError('Unknown key for load conv unit, key_name:%s' % (_key))
+
+                        # Handling different inception_type cases for InceptionSEBlock
+                        if inception_se_params['inception_type'] == "3a":
+                            inception_se = InceptionSEBlock(number=inception_se_params['number'],
+                                                            in_channel=inception_se_params['in_channel'],
+                                                            inception_type=inception_se_params['inception_type'],
+                                                            out_1x1=64, red_3x3=96, out_3x3=128, red_5x5=16, out_5x5=32,
+                                                            out_1x1pool=32,
+                                                            reduction_ratio=inception_se_params.get('reduction_ratio', 16))
+                        elif inception_se_params['inception_type'] == "3b":
+                            inception_se = InceptionSEBlock(number=inception_se_params['number'],
+                                                            in_channel=inception_se_params['in_channel'],
+                                                            inception_type=inception_se_params['inception_type'],
+                                                            out_1x1=128, red_3x3=128, out_3x3=192, red_5x5=32, out_5x5=96,
+                                                            out_1x1pool=64,
+                                                            reduction_ratio=inception_se_params.get('reduction_ratio', 16))
+                        elif inception_se_params['inception_type'] == "4a":
+                            inception_se = InceptionSEBlock(number=inception_se_params['number'],
+                                                            in_channel=inception_se_params['in_channel'],
+                                                            inception_type=inception_se_params['inception_type'],
+                                                            out_1x1=192, red_3x3=96, out_3x3=208, red_5x5=16, out_5x5=48,
+                                                            out_1x1pool=64,
+                                                            reduction_ratio=inception_se_params.get('reduction_ratio', 16))
+                        elif inception_se_params['inception_type'] == "4b":
+                            inception_se = InceptionSEBlock(number=inception_se_params['number'],
+                                                            in_channel=inception_se_params['in_channel'],
+                                                            inception_type=inception_se_params['inception_type'],
+                                                            out_1x1=160, red_3x3=112, out_3x3=224, red_5x5=24, out_5x5=64,
+                                                            out_1x1pool=64,
+                                                            reduction_ratio=inception_se_params.get('reduction_ratio', 16))
+                        elif inception_se_params['inception_type'] == "4c":
+                            inception_se = InceptionSEBlock(number=inception_se_params['number'],
+                                                            in_channel=inception_se_params['in_channel'],
+                                                            inception_type=inception_se_params['inception_type'],
+                                                            out_1x1=128, red_3x3=128, out_3x3=256, red_5x5=24, out_5x5=64,
+                                                            out_1x1pool=64,
+                                                            reduction_ratio=inception_se_params.get('reduction_ratio', 16))
+                        elif inception_se_params['inception_type'] == "4d":
+                            inception_se = InceptionSEBlock(number=inception_se_params['number'],
+                                                            in_channel=inception_se_params['in_channel'],
+                                                            inception_type=inception_se_params['inception_type'],
+                                                            out_1x1=112, red_3x3=144, out_3x3=288, red_5x5=32, out_5x5=64,
+                                                            out_1x1pool=64,
+                                                            reduction_ratio=inception_se_params.get('reduction_ratio', 16))
+                        elif inception_se_params['inception_type'] == "4e":
+                            inception_se = InceptionSEBlock(number=inception_se_params['number'],
+                                                            in_channel=inception_se_params['in_channel'],
+                                                            inception_type=inception_se_params['inception_type'],
+                                                            out_1x1=256, red_3x3=160, out_3x3=320, red_5x5=32, out_5x5=128,
+                                                            out_1x1pool=128,
+                                                            reduction_ratio=inception_se_params.get('reduction_ratio', 16))
+                        elif inception_se_params['inception_type'] == "5a":
+                            inception_se = InceptionSEBlock(number=inception_se_params['number'],
+                                                            in_channel=inception_se_params['in_channel'],
+                                                            inception_type=inception_se_params['inception_type'],
+                                                            out_1x1=256, red_3x3=160, out_3x3=320, red_5x5=32, out_5x5=128,
+                                                            out_1x1pool=128,
+                                                            reduction_ratio=inception_se_params.get('reduction_ratio', 16))
+                        else:
+                            inception_se = InceptionSEBlock(number=inception_se_params['number'],
+                                                            in_channel=inception_se_params['in_channel'],
+                                                            inception_type=inception_se_params['inception_type'],
+                                                            out_1x1=384, red_3x3=192, out_3x3=384, red_5x5=48, out_5x5=128,
+                                                            out_1x1pool=128,
+                                                            reduction_ratio=inception_se_params.get('reduction_ratio', 16))
+
+                        indi.units.append(inception_se)
+                    
+                    
+                    elif line.startswith('[inception-cbam'):
+                        cbam_inception_params = {}
+                        data_maps = line[16:-1].split(',', 4)
+                        for data_item in data_maps:
+                            _key, _value = data_item.split(":")
+                            if _key == 'number':
+                                indi.number_id = int(_value)
+                                cbam_inception_params['number'] = int(_value)
+                            elif _key == 'in':
+                                cbam_inception_params['in_channel'] = int(_value)
+                            elif _key == 'out':
+                                cbam_inception_params['out_channel'] = int(_value)
+                            elif _key == 'type':
+                                cbam_inception_params['inception_type'] = str(_value)
+                            elif _key == 'reduction_ratio':
+                                cbam_inception_params['reduction_ratio'] = int(_value)
+                            else:
+                                raise ValueError('Unknown key for load conv unit, key_name:%s' % (_key))
+
+                        # Handling different inception_type cases for CBAMInceptionBlock
+                        if cbam_inception_params['inception_type'] == "3a":
+                            cbam_inception = CBAMInceptionBlock(number=cbam_inception_params['number'],
+                                                                in_channel=cbam_inception_params['in_channel'],
+                                                                inception_type=cbam_inception_params['inception_type'],
+                                                                out_1x1=64, red_3x3=96, out_3x3=128, red_5x5=16, out_5x5=32,
+                                                                out_1x1pool=32,
+                                                                reduction_ratio=cbam_inception_params.get('reduction_ratio', 16))
+                        elif cbam_inception_params['inception_type'] == "3b":
+                            cbam_inception = CBAMInceptionBlock(number=cbam_inception_params['number'],
+                                                                in_channel=cbam_inception_params['in_channel'],
+                                                                inception_type=cbam_inception_params['inception_type'],
+                                                                out_1x1=128, red_3x3=128, out_3x3=192, red_5x5=32, out_5x5=96,
+                                                                out_1x1pool=64,
+                                                                reduction_ratio=cbam_inception_params.get('reduction_ratio', 16))
+                        elif cbam_inception_params['inception_type'] == "4a":
+                            cbam_inception = CBAMInceptionBlock(number=cbam_inception_params['number'],
+                                                                in_channel=cbam_inception_params['in_channel'],
+                                                                inception_type=cbam_inception_params['inception_type'],
+                                                                out_1x1=192, red_3x3=96, out_3x3=208, red_5x5=16, out_5x5=48,
+                                                                out_1x1pool=64,
+                                                                reduction_ratio=cbam_inception_params.get('reduction_ratio', 16))
+                        elif cbam_inception_params['inception_type'] == "4b":
+                            cbam_inception = CBAMInceptionBlock(number=cbam_inception_params['number'],
+                                                                in_channel=cbam_inception_params['in_channel'],
+                                                                inception_type=cbam_inception_params['inception_type'],
+                                                                out_1x1=160, red_3x3=112, out_3x3=224, red_5x5=24, out_5x5=64,
+                                                                out_1x1pool=64,
+                                                                reduction_ratio=cbam_inception_params.get('reduction_ratio', 16))
+                        elif cbam_inception_params['inception_type'] == "4c":
+                            cbam_inception = CBAMInceptionBlock(number=cbam_inception_params['number'],
+                                                                in_channel=cbam_inception_params['in_channel'],
+                                                                inception_type=cbam_inception_params['inception_type'],
+                                                                out_1x1=128, red_3x3=128, out_3x3=256, red_5x5=24, out_5x5=64,
+                                                                out_1x1pool=64,
+                                                                reduction_ratio=cbam_inception_params.get('reduction_ratio', 16))
+                        elif cbam_inception_params['inception_type'] == "4d":
+                            cbam_inception = CBAMInceptionBlock(number=cbam_inception_params['number'],
+                                                                in_channel=cbam_inception_params['in_channel'],
+                                                                inception_type=cbam_inception_params['inception_type'],
+                                                                out_1x1=112, red_3x3=144, out_3x3=288, red_5x5=32, out_5x5=64,
+                                                                out_1x1pool=64,
+                                                                reduction_ratio=cbam_inception_params.get('reduction_ratio', 16))
+                        elif cbam_inception_params['inception_type'] == "4e":
+                            cbam_inception = CBAMInceptionBlock(number=cbam_inception_params['number'],
+                                                                in_channel=cbam_inception_params['in_channel'],
+                                                                inception_type=cbam_inception_params['inception_type'],
+                                                                out_1x1=256, red_3x3=160, out_3x3=320, red_5x5=32, out_5x5=128,
+                                                                out_1x1pool=128,
+                                                                reduction_ratio=cbam_inception_params.get('reduction_ratio', 16))
+                        elif cbam_inception_params['inception_type'] == "5a":
+                            cbam_inception = CBAMInceptionBlock(number=cbam_inception_params['number'],
+                                                                in_channel=cbam_inception_params['in_channel'],
+                                                                inception_type=cbam_inception_params['inception_type'],
+                                                                out_1x1=256, red_3x3=160, out_3x3=320, red_5x5=32, out_5x5=128,
+                                                                out_1x1pool=128,
+                                                                reduction_ratio=cbam_inception_params.get('reduction_ratio', 16))
+                        else:
+                            cbam_inception = CBAMInceptionBlock(number=cbam_inception_params['number'],
+                                                                in_channel=cbam_inception_params['in_channel'],
+                                                                inception_type=cbam_inception_params['inception_type'],
+                                                                out_1x1=384, red_3x3=192, out_3x3=384, red_5x5=48, out_5x5=128,
+                                                                out_1x1pool=128,
+                                                                reduction_ratio=cbam_inception_params.get('reduction_ratio', 16))
+
+                        indi.units.append(cbam_inception)
+
+                    
+                    
+                    elif line.startswith('[inception-ca'):
+                        ca_inception_params = {}
+                        #print("rawline=", line, flush=True)
+                        data_maps = line[14:-1].split(',', 4)
+                        #print("data_maps", data_maps, flush=True)
+                        for data_item in data_maps:
+                            _key, _value = data_item.split(":")
+                            if _key == 'number':
+                                indi.number_id = int(_value)
+                                ca_inception_params['number'] = int(_value)
+                            elif _key == 'in':
+                                ca_inception_params['in_channel'] = int(_value)
+                            elif _key == 'out':
+                                ca_inception_params['out_channel'] = int(_value)
+                            elif _key == 'type':
+                                ca_inception_params['inception_type'] = str(_value)
+                            elif _key == 'reduction_ratio':
+                                ca_inception_params['reduction_ratio'] = int(_value)
+                            else:
+                                raise ValueError('Unknown key for load conv unit, key_name:%s' % (_key))
+                    
+                        # Handling different inception_type cases for CAInceptionBlock
+                        if ca_inception_params['inception_type'] == "3a":
+                            ca_inception = CAInceptionBlock(number=ca_inception_params['number'],
+                                                            in_channel=ca_inception_params['in_channel'],
+                                                            inception_type=ca_inception_params['inception_type'],
+                                                            out_1x1=64, red_3x3=96, out_3x3=128, red_5x5=16, out_5x5=32,
+                                                            out_1x1pool=32,
+                                                            reduction_ratio=ca_inception_params.get('reduction_ratio', 16))
+                        elif ca_inception_params['inception_type'] == "3b":
+                            ca_inception = CAInceptionBlock(number=ca_inception_params['number'],
+                                                            in_channel=ca_inception_params['in_channel'],
+                                                            inception_type=ca_inception_params['inception_type'],
+                                                            out_1x1=128, red_3x3=128, out_3x3=192, red_5x5=32, out_5x5=96,
+                                                            out_1x1pool=64,
+                                                            reduction_ratio=ca_inception_params.get('reduction_ratio', 16))
+                        elif ca_inception_params['inception_type'] == "4a":
+                            ca_inception = CAInceptionBlock(number=ca_inception_params['number'],
+                                                            in_channel=ca_inception_params['in_channel'],
+                                                            inception_type=ca_inception_params['inception_type'],
+                                                            out_1x1=192, red_3x3=96, out_3x3=208, red_5x5=16, out_5x5=48,
+                                                            out_1x1pool=64,
+                                                            reduction_ratio=ca_inception_params.get('reduction_ratio', 16))
+                        elif ca_inception_params['inception_type'] == "4b":
+                            ca_inception = CAInceptionBlock(number=ca_inception_params['number'],
+                                                            in_channel=ca_inception_params['in_channel'],
+                                                            inception_type=ca_inception_params['inception_type'],
+                                                            out_1x1=160, red_3x3=112, out_3x3=224, red_5x5=24, out_5x5=64,
+                                                            out_1x1pool=64,
+                                                            reduction_ratio=ca_inception_params.get('reduction_ratio', 16))
+                        elif ca_inception_params['inception_type'] == "4c":
+                            ca_inception = CAInceptionBlock(number=ca_inception_params['number'],
+                                                            in_channel=ca_inception_params['in_channel'],
+                                                            inception_type=ca_inception_params['inception_type'],
+                                                            out_1x1=128, red_3x3=128, out_3x3=256, red_5x5=24, out_5x5=64,
+                                                            out_1x1pool=64,
+                                                            reduction_ratio=ca_inception_params.get('reduction_ratio', 16))
+                        elif ca_inception_params['inception_type'] == "4d":
+                            ca_inception = CAInceptionBlock(number=ca_inception_params['number'],
+                                                            in_channel=ca_inception_params['in_channel'],
+                                                            inception_type=ca_inception_params['inception_type'],
+                                                            out_1x1=112, red_3x3=144, out_3x3=288, red_5x5=32, out_5x5=64,
+                                                            out_1x1pool=64,
+                                                            reduction_ratio=ca_inception_params.get('reduction_ratio', 16))
+                        elif ca_inception_params['inception_type'] == "4e":
+                            ca_inception = CAInceptionBlock(number=ca_inception_params['number'],
+                                                            in_channel=ca_inception_params['in_channel'],
+                                                            inception_type=ca_inception_params['inception_type'],
+                                                            out_1x1=256, red_3x3=160, out_3x3=320, red_5x5=32, out_5x5=128,
+                                                            out_1x1pool=128,
+                                                            reduction_ratio=ca_inception_params.get('reduction_ratio', 16))
+                        elif ca_inception_params['inception_type'] == "5a":
+                            ca_inception = CAInceptionBlock(number=ca_inception_params['number'],
+                                                            in_channel=ca_inception_params['in_channel'],
+                                                            inception_type=ca_inception_params['inception_type'],
+                                                            out_1x1=256, red_3x3=160, out_3x3=320, red_5x5=32, out_5x5=128,
+                                                            out_1x1pool=128,
+                                                            reduction_ratio=ca_inception_params.get('reduction_ratio', 16))
+                        else:
+                            ca_inception = CAInceptionBlock(number=ca_inception_params['number'],
+                                                            in_channel=ca_inception_params['in_channel'],
+                                                            inception_type=ca_inception_params['inception_type'],
+                                                            out_1x1=384, red_3x3=192, out_3x3=384, red_5x5=48, out_5x5=128,
+                                                            out_1x1pool=128,
+                                                            reduction_ratio=ca_inception_params.get('reduction_ratio', 16))
+                    
+                        indi.units.append(ca_inception)
+
+
+
+                    
+                    # SE-ResNet block iÃ§in ekleme
+                    elif line.startswith('[se-resnet'):
+                        se_resnet_params = {}
+                        data_maps = line[11:-1].split(',', 4)
+                        for data_item in data_maps:
+                            _key, _value = data_item.split(":")
+                            if _key == 'number':
+                                indi.number_id = int(_value)
+                                se_resnet_params['number'] = int(_value)
+                            elif _key == 'amount':
+                                se_resnet_params['amount'] = int(_value)
+                            elif _key == 'in':
+                                se_resnet_params['in_channel'] = int(_value)
+                            elif _key == 'out':
+                                se_resnet_params['out_channel'] = int(_value)
+                            elif _key == 'reduction_ratio':
+                                se_resnet_params['reduction_ratio'] = int(_value)
+                            else:
+                                raise ValueError('Unknown key for load conv unit, key_name:%s' % (_key))
+                    
+                        se_resnet = SEResNetUnit(**se_resnet_params)
+                        indi.units.append(se_resnet)
+
+                    #################################################
+                    # CA-ResNet block iÃ§in ekleme
+                    elif line.startswith('[ca-resnet'):
+                        ca_resnet_params = {}
+                        data_maps = line[11:-1].split(',', 4)
+                        for data_item in data_maps:
+                            _key, _value = data_item.split(":")
+                            if _key == 'number':
+                                indi.number_id = int(_value)
+                                ca_resnet_params['number'] = int(_value)
+                            elif _key == 'amount':
+                                ca_resnet_params['amount'] = int(_value)
+                            elif _key == 'in':
+                                ca_resnet_params['in_channel'] = int(_value)
+                            elif _key == 'out':
+                                ca_resnet_params['out_channel'] = int(_value)
+                            elif _key == 'reduction_ratio':
+                                ca_resnet_params['reduction_ratio'] = int(_value)
+                            else:
+                                raise ValueError('Unknown key for load conv unit, key_name:%s' % (_key))
+                    
+                        #ca_resnet = SEResNetUnit(**ca_resnet_params)
+                        ca_resnet = CAResNetUnit(**ca_resnet_params)
+                        indi.units.append(ca_resnet)
+
+                    # CBAM-ResNet block iÃ§in ekleme
+                    elif line.startswith('[cbam-resnet'):
+                        cbam_resnet_params = {}
+                        data_maps = line[13:-1].split(',', 4)
+                        for data_item in data_maps:
+                            _key, _value = data_item.split(":")
+                            if _key == 'number':
+                                indi.number_id = int(_value)
+                                cbam_resnet_params['number'] = int(_value)
+                            elif _key == 'amount':
+                                cbam_resnet_params['amount'] = int(_value)
+                            elif _key == 'in':
+                                cbam_resnet_params['in_channel'] = int(_value)
+                            elif _key == 'out':
+                                cbam_resnet_params['out_channel'] = int(_value)
+                            elif _key == 'reduction_ratio':
+                                cbam_resnet_params['reduction_ratio'] = int(_value)
+                            else:
+                                raise ValueError('Unknown key for load conv unit, key_name:%s' % (_key))
+                    
+                        #cbam_resnet = SEResNetUnit(**cbam_resnet_params)
+                        cbam_resnet = CBAMResNetUnit(**cbam_resnet_params)
+                        indi.units.append(cbam_resnet)
+
+                    #####################################################
+
+                    
+                    # SE-DenseNet block için ekleme
+                    elif line.startswith('[se-densenet'):
+                        se_densenet_params = {}
+                        data_maps = line[13:-1].split(',', 5)
+                        for data_item in data_maps:
+                            _key, _value = data_item.split(":")
+                            if _key == 'number':
+                                indi.number_id = int(_value)
+                                se_densenet_params['number'] = int(_value)
+                            elif _key == 'amount':
+                                se_densenet_params['amount'] = int(_value)
+                            elif _key == 'k':
+                                se_densenet_params['k'] = int(_value)
+                            elif _key == 'in':
+                                se_densenet_params['in_channel'] = int(_value)
+                            elif _key == 'out':
+                                se_densenet_params['out_channel'] = int(_value)
+                            elif _key == 'reduction_ratio':
+                                se_densenet_params['reduction_ratio'] = int(_value)
+                            else:
+                                raise ValueError('Unknown key for load conv unit, key_name:%s' % (_key))
+
+                        # get max_input_channel (Densenet için olduğu gibi)
+                        if se_densenet_params['k'] == 12:
+                            rs = StatusUpdateTool.get_densenet_k12()
+                            se_densenet_params['max_input_channel'] = rs[0]
+                        elif se_densenet_params['k'] == 20:
+                            rs = StatusUpdateTool.get_densenet_k20()
+                            se_densenet_params['max_input_channel'] = rs[0]
+                        elif se_densenet_params['k'] == 40:
+                            rs = StatusUpdateTool.get_densenet_k40()
+                            se_densenet_params['max_input_channel'] = rs[0]
+
+                        se_densenet = SEDenseNetUnit(**se_densenet_params)
+                        indi.units.append(se_densenet)
+
+
+
+                    # CBAM-DenseNet block için ekleme
+                    elif line.startswith('[cbam-densenet'):
+                        cbam_densenet_params = {}
+                        data_maps = line[15:-1].split(',', 5)
+                        for data_item in data_maps:
+                            _key, _value = data_item.split(":")
+                            if _key == 'number':
+                                indi.number_id = int(_value)
+                                cbam_densenet_params['number'] = int(_value)
+                            elif _key == 'amount':
+                                cbam_densenet_params['amount'] = int(_value)
+                            elif _key == 'k':
+                                cbam_densenet_params['k'] = int(_value)
+                            elif _key == 'in':
+                                cbam_densenet_params['in_channel'] = int(_value)
+                            elif _key == 'out':
+                                cbam_densenet_params['out_channel'] = int(_value)
+                            elif _key == 'reduction_ratio':
+                                cbam_densenet_params['reduction_ratio'] = int(_value)
+                            else:
+                                raise ValueError('Unknown key for load conv unit, key_name:%s' % (_key))
+
+                        # get max_input_channel (Densenet için olduğu gibi)
+                        if cbam_densenet_params['k'] == 12:
+                            rs = StatusUpdateTool.get_densenet_k12()
+                            cbam_densenet_params['max_input_channel'] = rs[0]
+                        elif cbam_densenet_params['k'] == 20:
+                            rs = StatusUpdateTool.get_densenet_k20()
+                            cbam_densenet_params['max_input_channel'] = rs[0]
+                        elif cbam_densenet_params['k'] == 40:
+                            rs = StatusUpdateTool.get_densenet_k40()
+                            cbam_densenet_params['max_input_channel'] = rs[0]
+
+                        cbam_densenet = CBAMDenseNetUnit(**cbam_densenet_params)
+                        indi.units.append(cbam_densenet)
+
+
+                    # CA-DenseNet block için ekleme
+                    elif line.startswith('[ca-densenet'):
+                        ca_densenet_params = {}
+                        data_maps = line[13:-1].split(',', 5)
+                        for data_item in data_maps:
+                            _key, _value = data_item.split(":")
+                            if _key == 'number':
+                                indi.number_id = int(_value)
+                                ca_densenet_params['number'] = int(_value)
+                            elif _key == 'amount':
+                                ca_densenet_params['amount'] = int(_value)
+                            elif _key == 'k':
+                                ca_densenet_params['k'] = int(_value)
+                            elif _key == 'in':
+                                ca_densenet_params['in_channel'] = int(_value)
+                            elif _key == 'out':
+                                ca_densenet_params['out_channel'] = int(_value)
+                            elif _key == 'reduction_ratio':
+                                ca_densenet_params['reduction_ratio'] = int(_value)
+                            else:
+                                raise ValueError('Unknown key for load conv unit, key_name:%s' % (_key))
+
+                        # get max_input_channel (Densenet için olduğu gibi)
+                        if ca_densenet_params['k'] == 12:
+                            rs = StatusUpdateTool.get_densenet_k12()
+                            ca_densenet_params['max_input_channel'] = rs[0]
+                        elif ca_densenet_params['k'] == 20:
+                            rs = StatusUpdateTool.get_densenet_k20()
+                            ca_densenet_params['max_input_channel'] = rs[0]
+                        elif ca_densenet_params['k'] == 40:
+                            rs = StatusUpdateTool.get_densenet_k40()
+                            ca_densenet_params['max_input_channel'] = rs[0]
+
+                        ca_densenet = CADenseNetUnit(**ca_densenet_params)
+                        indi.units.append(ca_densenet)
+
+                    
+                    
+                    elif line.startswith('[inception-eca'):
+                        inception_eca_params = {}
+                        data_maps = line[14:-1].split(',', 4)  
+                        for data_item in data_maps:
+                            _key, _value = data_item.split(":")
+                            if _key == 'number':
+                                indi.number_id = int(_value)
+                                inception_eca_params['number'] = int(_value)
+                            elif _key == 'in':
+                                inception_eca_params['in_channel'] = int(_value)
+                            elif _key == 'out':
+                                inception_eca_params['out_channel'] = int(_value)
+                            elif _key == 'type':
+                                inception_eca_params['inception_type'] = str(_value)
+                            elif _key == 'k_size':
+                                inception_eca_params['k_size'] = int(_value)
+                            else:
+                                raise ValueError('Unknown key for load inception-eca unit, key_name:%s' % (_key))
+                    
+                        # Ortak parametre fonksiyonu ile layer bilgilerini al
+                        out_1x1, red_3x3, out_3x3, red_5x5, out_5x5, out_1x1pool = get_inception_params(inception_eca_params['inception_type'])
+                    
+                        # Modülü oluştur
+                        inception_eca = InceptionECABlock(
+                            number=inception_eca_params['number'],
+                            in_channel=inception_eca_params['in_channel'],
+                            inception_type=inception_eca_params['inception_type'],
+                            out_1x1=out_1x1,
+                            red_3x3=red_3x3,
+                            out_3x3=out_3x3,
+                            red_5x5=red_5x5,
+                            out_5x5=out_5x5,
+                            out_1x1pool=out_1x1pool,
+                            k_size=inception_eca_params.get('k_size', 3)  # k_size default olarak 3
+                        )
+                    
+                        indi.units.append(inception_eca)
+
+                    
+                    # ECA-ResNet block için ekleme
+                    elif line.startswith('[eca-resnet'):
+                        eca_resnet_params = {}
+                        data_maps = line[12:-1].split(',', 4)
+                        for data_item in data_maps:
+                            _key, _value = data_item.split(":")
+                            if _key == 'number':
+                                indi.number_id = int(_value)
+                                eca_resnet_params['number'] = int(_value)
+                            elif _key == 'amount':
+                                eca_resnet_params['amount'] = int(_value)
+                            elif _key == 'in':
+                                eca_resnet_params['in_channel'] = int(_value)
+                            elif _key == 'out':
+                                eca_resnet_params['out_channel'] = int(_value)
+                            elif _key == 'k_size':
+                                eca_resnet_params['k_size'] = int(_value)
+                            else:
+                                raise ValueError('Unknown key for load conv unit, key_name:%s' % (_key))
+                    
+                        eca_resnet = ECAResNetUnit(**eca_resnet_params)
+                        indi.units.append(eca_resnet)
+
+
+                    
+                    elif line.startswith('[eca-densenet'):
+                        eca_densenet_params = {}
+                        data_maps = line[14:-1].split(',', 5)
+                        for data_item in data_maps:
+                            _key, _value = data_item.split(":")
+                            if _key == 'number':
+                                indi.number_id = int(_value)
+                                eca_densenet_params['number'] = int(_value)
+                            elif _key == 'amount':
+                                eca_densenet_params['amount'] = int(_value)
+                            elif _key == 'k':
+                                eca_densenet_params['k'] = int(_value)
+                            elif _key == 'in':
+                                eca_densenet_params['in_channel'] = int(_value)
+                            elif _key == 'out':
+                                eca_densenet_params['out_channel'] = int(_value)
+                            elif _key == 'k_size':
+                                eca_densenet_params['k_size'] = int(_value)
+                            else:
+                                raise ValueError('Unknown key for load conv unit, key_name:%s' % (_key))
+                    
+                        # max_input_channel değerini k'ya göre belirle
+                        if eca_densenet_params['k'] == 12:
+                            rs = StatusUpdateTool.get_densenet_k12()
+                            eca_densenet_params['max_input_channel'] = rs[0]
+                        elif eca_densenet_params['k'] == 20:
+                            rs = StatusUpdateTool.get_densenet_k20()
+                            eca_densenet_params['max_input_channel'] = rs[0]
+                        elif eca_densenet_params['k'] == 40:
+                            rs = StatusUpdateTool.get_densenet_k40()
+                            eca_densenet_params['max_input_channel'] = rs[0]
+                    
+                        # ECADenseNetUnit nesnesi oluşturuluyor
+                        eca_densenet = ECADenseNetUnit(**eca_densenet_params)
+                        indi.units.append(eca_densenet)
+
+####################################################################################################################################################
+
+                    else:
+                        print('Unknown key for load unit type, line content:%s'%(line))
+
+
+
+            pop.individuals.append(indi)
+        f.close()
+
+        # load the fitness to the individuals who have been evaluated, only suitable for the first generation
+        if gen_no == 0:
+            after_file_path = './populations/after_%02d.txt'%(gen_no)
+            if os.path.exists(after_file_path):
+                fitness_map = {}
+                f = open(after_file_path)
+                for line in f:
+                    if len(line.strip()) > 0:
+                        line = line.strip().split('=')
+                        fitness_map[line[0]] = float(line[1])
+                f.close()
+
+                for indi in pop.individuals:
+                    if indi.id in fitness_map:
+                        indi.acc = fitness_map[indi.id]
+
+        return pop
+
+
+    # The read_template method reads a Python template file and divides it into three parts based on specific markers
+    # (#generated_init, #generate_forward, and """). Each part is stored as a list of lines, which is then returned by the method.
+    # This is likely used to extract and manipulate specific sections of a template file for further processing or code generation.
+
+    @classmethod
+    def read_template(cls):
+        _path = './template/cifar10.py'
+        part1 = []
+        part2 = []
+        part3 = []
+
+        f = open(_path)
+        f.readline() #skip this comment
+        line = f.readline().rstrip()
+        while line.strip() != '#generated_init':
+            part1.append(line)
+            line = f.readline().rstrip()
+        #print('\n'.join(part1))
+
+        line = f.readline().rstrip() #skip the comment '#generated_init'
+        while line.strip() != '#generate_forward':
+            part2.append(line)
+            line = f.readline().rstrip()
+        #print('\n'.join(part2))
+
+        line = f.readline().rstrip() #skip the comment '#generate_forward'
+
+        while line.strip() != '"""':
+            part3.append(line)
+            line = f.readline().rstrip()
+        #print('\n'.join(part3))
+        return part1, part2, part3
+
+
+    @classmethod
+    def generate_pytorch_file(cls, indi):
+        """This function generates python scripts like indi0000.py"""
+        #query resnet and densenet unit
+        unit_list = []
+        for index, u in enumerate(indi.units):
+            if u.type ==1:
+                layer = 'self.op%d = ResNetUnit(amount=%d, in_channel=%d, out_channel=%d)'%(index, u.amount, u.in_channel, u.out_channel)
+                unit_list.append(layer)
+
+            elif u.type ==3:
+                layer = 'self.op%d = DenseNetUnit(k=%d, amount=%d, in_channel=%d, out_channel=%d, max_input_channel=%d)'%(index, u.k, u.amount, u.in_channel, u.out_channel, u.max_input_channel)
+                unit_list.append(layer)
+
+            elif u.type == 4:
+                layer = 'self.op%d = Inception_block(in_channels=%d, out_1x1=%d, red_3x3=%d, out_3x3=%d, red_5x5=%d, out_5x5=%d, out_1x1pool=%d)'%(index, u.in_channel, u.out_1x1, u.red_3x3, u.out_3x3, u.red_5x5, u.out_5x5, u.out_1x1pool)
+                unit_list.append(layer)
+
+                #InceptionSE_block class will be added
+            elif u.type == 5:  # New case for InceptionSEBlock
+                layer = 'self.op%d = InceptionSE_block(in_channels=%d, out_1x1=%d, red_3x3=%d, out_3x3=%d, red_5x5=%d, out_5x5=%d, out_1x1pool=%d, reduction_ratio=%d)' % (index, u.in_channel, u.out_1x1, u.red_3x3, u.out_3x3, u.red_5x5, u.out_5x5, u.out_1x1pool, u.reduction_ratio)
+                unit_list.append(layer)
+
+            # CBAMInception_block class will be added
+            elif u.type == 6:  # New case for CBAMInceptionBlock
+                layer = 'self.op%d = CBAMInceptionBlock(in_channels=%d, out_1x1=%d, red_3x3=%d, out_3x3=%d, red_5x5=%d, out_5x5=%d, out_1x1pool=%d, reduction_ratio=%d)' % (index, u.in_channel, u.out_1x1, u.red_3x3, u.out_3x3, u.red_5x5, u.out_5x5, u.out_1x1pool, u.reduction_ratio)
+                unit_list.append(layer)
+                
+            # CAInceptionBlock class will be added
+            elif u.type == 7:  # New case for CAInceptionBlock
+                layer = 'self.op%d = CAInceptionBlock(in_channels=%d, out_1x1=%d, red_3x3=%d, out_3x3=%d, red_5x5=%d, out_5x5=%d, out_1x1pool=%d, reduction_ratio=%d)' % (index, u.in_channel, u.out_1x1, u.red_3x3, u.out_3x3, u.red_5x5, u.out_5x5, u.out_1x1pool, u.reduction_ratio)
+                unit_list.append(layer)
+
+            
+            
+            # SE-ResNet block class will be added
+            elif u.type == 8:  # New case for SE-ResNet
+                layer = 'self.op%d = SEResNetBlock(amount=%d, in_channel=%d, out_channel=%d, reduction_ratio=%d)' % (index, u.amount, u.in_channel, u.out_channel, u.reduction_ratio)
+                unit_list.append(layer)
+            
+            # CBAM-ResNet block class will be added
+            elif u.type == 9:  # New case for CBAM-ResNet
+                layer = 'self.op%d = CBAMResNetBlock(amount=%d, in_channel=%d, out_channel=%d, reduction_ratio=%d)' % (index, u.amount, u.in_channel, u.out_channel, u.reduction_ratio)
+                unit_list.append(layer)
+            
+            # CA-ResNet block class will be added
+            elif u.type == 10:  # New case for CA-ResNet
+                layer = 'self.op%d = CAResNetBlock(amount=%d, in_channel=%d, out_channel=%d, reduction_ratio=%d)' % (index, u.amount, u.in_channel, u.out_channel, u.reduction_ratio)
+                unit_list.append(layer)
+            
+            # SE-DenseNet block class will be added
+            elif u.type == 11:  # New case for SE-DenseNet
+                layer = 'self.op%d = SEDenseNetBlock(k=%d, amount=%d, in_channel=%d, out_channel=%d, max_input_channel=%d, reduction_ratio=%d)' % (index, u.k, u.amount, u.in_channel, u.out_channel, u.max_input_channel, u.reduction_ratio)
+                unit_list.append(layer)
+            
+            # CBAM-DenseNet block class will be added
+            elif u.type == 12:  # New case for CBAM-DenseNet
+                layer = 'self.op%d = CBAMDenseNetBlock(k=%d, amount=%d, in_channel=%d, out_channel=%d, max_input_channel=%d, reduction_ratio=%d)' % (index, u.k, u.amount, u.in_channel, u.out_channel, u.max_input_channel, u.reduction_ratio)
+                unit_list.append(layer)
+            
+            # CA-DenseNet block class will be added
+            elif u.type == 13:  # New case for CA-DenseNet
+                layer = 'self.op%d = CADenseNetBlock(k=%d, amount=%d, in_channel=%d, out_channel=%d, max_input_channel=%d, reduction_ratio=%d)' % (index, u.k, u.amount, u.in_channel, u.out_channel, u.max_input_channel, u.reduction_ratio)
+                unit_list.append(layer)
+
+            # Inception-ECA block class will be added
+            elif u.type == 14:
+                layer = 'self.op%d = InceptionECABlock(in_channels=%d, out_1x1=%d, red_3x3=%d, out_3x3=%d, red_5x5=%d, out_5x5=%d, out_1x1pool=%d, k_size=%d)' % (
+                    index, u.in_channel, u.out_1x1, u.red_3x3, u.out_3x3, u.red_5x5, u.out_5x5, u.out_1x1pool, u.k_size)
+                unit_list.append(layer)
+            
+            # ECA-ResNet block
+            elif u.type == 15:
+                layer = 'self.op%d = ECAResNetBlock(amount=%d, in_channel=%d, out_channel=%d, k_size=%d)' % (
+                    index, u.amount, u.in_channel, u.out_channel, u.k_size)
+                unit_list.append(layer)
+            
+            # ECA-DenseNet block
+            elif u.type == 16:
+                layer = 'self.op%d = ECADenseNetBlock(k=%d, amount=%d, in_channel=%d, out_channel=%d, max_input_channel=%d, k_size=%d)' % (
+                    index, u.k, u.amount, u.in_channel, u.out_channel, u.max_input_channel, u.k_size)
+                unit_list.append(layer)
+            
+                        
+
+        #print('\n'.join(unit_list))
+
+        # Query fully-connected layer
+        out_channel_list = []
+        image_output_size = StatusUpdateTool.get_input_size()
+        
+        # Tanımlı modül grupları
+        out_channel_modules = {1, 3, 8, 9, 10, 11, 12, 13, 15, 16}
+        inception_modules = {4, 5, 6, 7, 14}
+        
+        for u in indi.units:
+            if u.type in out_channel_modules:
+                out_channel_list.append(u.out_channel)
+            elif u.type in inception_modules:
+                out_channel_list.append(u.out_1x1 + u.out_3x3 + u.out_5x5 + u.out_1x1pool)
+            else:  # Pooling katmanı
+                out_channel_list.append(out_channel_list[-1])
+                image_output_size = image_output_size // 2  # pooling sonrası boyut yarıya iner
+        
+        # Linear katman tanımı
+        fully_layer_name = 'self.linear = nn.Linear(%d, %d)' % (
+            image_output_size * image_output_size * out_channel_list[-1], StatusUpdateTool.get_num_class())
+
+
+
+        """
+        # Query fully-connect layer
+        out_channel_list = []
+        image_output_size = StatusUpdateTool.get_input_size()
+        for u in indi.units:
+            if u.type == 1:
+                out_channel_list.append(u.out_channel)
+
+            elif u.type == 3:
+                out_channel_list.append(u.out_channel)
+
+
+            # The reason why the output channel calculation is the same for both the Inception_block
+            # and InceptionSE_block is because the Squeeze-and-Excitation (SE) mechanism used in InceptionSE_block
+            # does not change the number of output channels . only recalibrates the feature maps.
+            
+            elif u.type == 4:
+                out_channel_list.append(u.out_1x1 + u.out_3x3 + u.out_5x5 + u.out_1x1pool)
+
+            elif u.type == 5:  # Handling InceptionSE_block
+                out_channel_list.append(u.out_1x1 + u.out_3x3 + u.out_5x5 + u.out_1x1pool)
+                
+            elif u.type == 6:  # Handling CBAMInception_block
+                out_channel_list.append(u.out_1x1 + u.out_3x3 + u.out_5x5 + u.out_1x1pool)
+                
+            elif u.type == 7:  # Handling CAInceptionBlock
+                out_channel_list.append(u.out_1x1 + u.out_3x3 + u.out_5x5 + u.out_1x1pool)
+            
+            
+            elif u.type == 8:  # Handling SE-ResNet
+                out_channel_list.append(u.out_channel)
+            
+            elif u.type == 9:  # Handling CBAM-ResNet
+                out_channel_list.append(u.out_channel)
+            
+            elif u.type == 10:  # Handling CA-ResNet
+                out_channel_list.append(u.out_channel)
+            
+            elif u.type == 11:  # Handling SE-DenseNet
+                out_channel_list.append(u.out_channel)
+            
+            elif u.type == 12:  # Handling CBAM-DenseNet
+                out_channel_list.append(u.out_channel)
+            
+            elif u.type == 13:  # Handling CA-DenseNet
+                out_channel_list.append(u.out_channel)
+
+
+            else:
+                out_channel_list.append(out_channel_list[-1])
+                image_output_size = int(image_output_size / 2)
+
+        fully_layer_name = 'self.linear = nn.Linear(%d, %d)' % (
+            image_output_size * image_output_size * out_channel_list[-1], StatusUpdateTool.get_num_class())
+
+        """
+
+        #print(fully_layer_name, out_channel_list, image_output_size)
+
+
+        # This part of the code is responsible for generating the forward method of the PyTorch model.
+        # The forward method defines how the data flows through the network, layer by layer.
+        # The code iterates over each unit in the network (indi.units), determines its type,
+        # and then generates the appropriate PyTorch code to pass the data through that unit.
+
+        #Generate the forward part
+
+
+
+        forward_list = []
+        
+        for i, u in enumerate(indi.units):
+            last_out_put = 'x' if i == 0 else 'out_%d' % (i - 1)
+        
+            # Tüm modül türleri burada gruplanabilir (hepsi op%d(x) şeklinde çalışıyor)
+            common_unit_types = {
+                1, 3, 4, 5, 6, 7,   # Inception + SE/CBAM/CA
+                8, 9, 10,           # ResNet + SE/CBAM/CA
+                11, 12, 13,         # DenseNet + SE/CBAM/CA
+                14, 15, 16          # ECA blocks
+            }
+        
+            if u.type in common_unit_types:
+                _str = 'out_%d = self.op%d(%s)' % (i, i, last_out_put)
+            else:  # Pooling layer
+                if u.max_or_avg < 0.5:
+                    _str = 'out_%d = F.max_pool2d(out_%d, 2)' % (i, i - 1)
+                else:
+                    _str = 'out_%d = F.avg_pool2d(out_%d, 2)' % (i, i - 1)
+        
+            forward_list.append(_str)
+        
+        forward_list.append('out = out_%d' % (len(indi.units) - 1))
+        
+
+
+        """
+        
+        forward_list = []
+        
+        for i, u in enumerate(indi.units):
+            if i == 0:
+                last_out_put = 'x'
+            else:
+                last_out_put = 'out_%d' % (i-1)
+
+            if u.type == 1:  # ResNet unit
+                _str = 'out_%d = self.op%d(%s)' % (i, i, last_out_put)
+                forward_list.append(_str)
+                
+            elif u.type == 3:  # DenseNet unit
+                _str = 'out_%d = self.op%d(%s)' % (i, i, last_out_put)
+                forward_list.append(_str)
+                
+            elif u.type == 4:  # Inception unit
+                _str = 'out_%d = self.op%d(%s)' % (i, i, last_out_put)
+                forward_list.append(_str)
+                
+            elif u.type == 5:  # InceptionSE_block
+                _str = 'out_%d = self.op%d(%s)' % (i, i, last_out_put)
+                forward_list.append(_str)
+                
+            elif u.type == 6:  # CBAMInception_block
+                _str = 'out_%d = self.op%d(%s)' % (i, i, last_out_put)
+                forward_list.append(_str)
+                
+            elif u.type == 7:  # CAInception_block
+                _str = 'out_%d = self.op%d(%s)' % (i, i, last_out_put)
+                forward_list.append(_str)
+                    
+                    
+            elif u.type == 8:  # SE-ResNet unit
+                _str = 'out_%d = self.op%d(%s)' % (i, i, last_out_put)
+                forward_list.append(_str)
+            
+            elif u.type == 9:  # CBAM-ResNet unit
+                _str = 'out_%d = self.op%d(%s)' % (i, i, last_out_put)
+                forward_list.append(_str)
+            
+            elif u.type == 10:  # CA-ResNet unit
+                _str = 'out_%d = self.op%d(%s)' % (i, i, last_out_put)
+                forward_list.append(_str)
+            
+            elif u.type == 11:  # SE-DenseNet unit
+                _str = 'out_%d = self.op%d(%s)' % (i, i, last_out_put)
+                forward_list.append(_str)
+            
+            elif u.type == 12:  # CBAM-DenseNet unit
+                _str = 'out_%d = self.op%d(%s)' % (i, i, last_out_put)
+                forward_list.append(_str)
+            
+            elif u.type == 13:  # CA-DenseNet unit
+                _str = 'out_%d = self.op%d(%s)' % (i, i, last_out_put)
+                forward_list.append(_str)
+
+
+            elif u.type == 14:  # Inception-ECA block
+                _str = 'out_%d = self.op%d(%s)' % (i, i, last_out_put)
+                forward_list.append(_str)
+            
+            elif u.type == 15:  # ECA-ResNet unit
+                _str = 'out_%d = self.op%d(%s)' % (i, i, last_out_put)
+                forward_list.append(_str)
+            
+            elif u.type == 16:  # ECA-DenseNet unit
+                _str = 'out_%d = self.op%d(%s)' % (i, i, last_out_put)
+                forward_list.append(_str)
+            
+                                
+            else:  # Pooling unit
+                if u.max_or_avg < 0.5:
+                    _str = 'out_%d = F.max_pool2d(out_%d, 2)' % (i, i-1)
+                else:
+                    _str = 'out_%d = F.avg_pool2d(out_%d, 2)' % (i, i-1)
+                forward_list.append(_str)
+
+        forward_list.append('out = out_%d' % (len(indi.units)-1))
+        """
+
+        part1, part2, part3 = cls.read_template()
+
+        _str = []
+        current_time = time.strftime("%Y-%m-%d  %H:%M:%S")
+        _str.append('"""')
+        _str.append(current_time)
+        _str.append('"""')
+        _str.extend(part1)
+        _str.append('\n        %s'%('#resnet and densenet unit'))
+        for s in unit_list:
+            _str.append('        %s'%(s))
+        _str.append('\n        %s'%('#linear unit'))
+        _str.append('        %s'%(fully_layer_name))
+
+        _str.extend(part2)
+        for s in forward_list:
+            _str.append('        %s'%(s))
+        _str.extend(part3)
+        #print('\n'.join(_str))
+        file_name = './scripts/%s.py'%(indi.id)
+        script_file_handler = open(file_name, 'w')
+        script_file_handler.write('\n'.join(_str))
+        script_file_handler.flush()
+        script_file_handler.close()
+
+    @classmethod
+    def write_to_file(cls, _str, _file):
+        f = open(_file, 'w')
+        f.write(_str)
+        f.flush()
+        f.close()
+
+
+if __name__ == '__main__':
+    GPUTools.detect_availabel_gpu_id()
