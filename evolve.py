@@ -159,7 +159,13 @@ class EvolveCNN(object):
                 if metrics is not None:
                     Log.info('Belief cycle metrics: %s' % metrics.to_dict())
 
-    def crossover_and_mutation(self, target_size=None, legacy_mode=True):
+    def crossover_and_mutation(
+        self,
+        target_size=None,
+        legacy_mode=True,
+        excluded_architecture_ids=None,
+        minimum_required_size=None,
+    ):
         #print(f"Rank {hvd.rank()} in crossover_and_mutation function")
         if (not self.horovod_enabled) or (self.rank == 0):
             cm = CrossoverAndMutation(
@@ -171,6 +177,9 @@ class EvolveCNN(object):
                     'gen_no': self.pops.gen_no,
                     'target_size': target_size or self.params['pop_size'],
                     'legacy_mode': legacy_mode,
+                    'excluded_architecture_ids': excluded_architecture_ids or set(),
+                    'minimum_required_size': minimum_required_size
+                    or self.params['pop_size'],
                 },
             )
             offspring = cm.process()
@@ -351,6 +360,8 @@ class EvolveCNN(object):
                 Log.info('EVOLVE[%d-gen]-Begin to crossover and mutation' % (curr_gen))
             #if (not self.horovod_enabled) or (self.rank == 0):
             target_size = self.params['pop_size']
+            minimum_required_size = self.params['pop_size']
+            excluded_architecture_ids = set()
             legacy_mode = True
             if (not self.horovod_enabled) or (self.rank == 0):
                 if self.belief_manager is not None and self.belief_manager.is_enabled:
@@ -358,8 +369,19 @@ class EvolveCNN(object):
                         self.params['pop_size'], curr_gen
                     )
                     legacy_mode = not self.belief_manager.guided_active(curr_gen)
+                    if not legacy_mode:
+                        cache_map = Utils.load_cache_data()
+                        excluded_architecture_ids = (
+                            self.belief_manager.excluded_architecture_ids(cache_map)
+                        )
+                        minimum_required_size = (
+                            self.belief_manager.config.evaluation_budget
+                        )
             self.crossover_and_mutation(
-                target_size=target_size, legacy_mode=legacy_mode
+                target_size=target_size,
+                legacy_mode=legacy_mode,
+                excluded_architecture_ids=excluded_architecture_ids,
+                minimum_required_size=minimum_required_size,
             )
             if (not self.horovod_enabled) or (self.rank == 0):
                 Log.info('EVOLVE[%d-gen]-Finish crossover and mutation' % (curr_gen))
