@@ -82,6 +82,41 @@ class ArchiveStorage:
         return archive
 
     @classmethod
+    def save_state(cls, state: Dict[str, Any], path: Path | str) -> Path:
+        """Write a generic belief state dictionary atomically."""
+
+        output_path = Path(path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema_version": cls.SCHEMA_VERSION,
+            "saved_at_utc": datetime.now(timezone.utc).isoformat(),
+            "state": state,
+        }
+        temporary_path = output_path.with_suffix(output_path.suffix + ".tmp")
+        with temporary_path.open("w", encoding="utf-8") as file_handle:
+            json.dump(payload, file_handle, indent=2, sort_keys=True)
+            file_handle.flush()
+            os.fsync(file_handle.fileno())
+        temporary_path.replace(output_path)
+        return output_path
+
+    @classmethod
+    def load_state(cls, path: Path | str) -> Dict[str, Any]:
+        """Load a generic belief state dictionary."""
+
+        input_path = Path(path)
+        if not input_path.exists():
+            raise FileNotFoundError(f"Belief state file was not found: {input_path}")
+        with input_path.open("r", encoding="utf-8") as file_handle:
+            payload = json.load(file_handle)
+        if payload.get("schema_version") != cls.SCHEMA_VERSION:
+            raise ValueError("Unsupported belief state schema version")
+        state = payload.get("state")
+        if not isinstance(state, dict):
+            raise TypeError("Belief state field must be a dictionary")
+        return state
+
+    @classmethod
     def _validate_payload(cls, payload: Any) -> None:
         """Check the minimum fields required for a valid archive file."""
 
