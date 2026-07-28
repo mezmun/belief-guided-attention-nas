@@ -139,6 +139,16 @@ class BeliefManager:
             return int(population_size * self.config.candidate_multiplier)
         return int(population_size)
 
+    def excluded_architecture_ids(
+        self, cache_map: Optional[Dict[str, Any]] = None
+    ) -> set[str]:
+        """Return architecture IDs that should not enter a guided candidate pool."""
+
+        excluded = set(self.archive.architecture_ids())
+        if cache_map:
+            excluded.update(str(key) for key in cache_map.keys())
+        return excluded
+
     def bootstrap_population(
         self,
         individuals: Iterable[Any],
@@ -172,25 +182,37 @@ class BeliefManager:
 
         if not self.is_enabled:
             raise RuntimeError("prepare_cycle was called while the belief system is disabled")
+
         candidate_list = list(candidates)
         cache = cache_map or {}
-        unique: List[tuple[Any, Any]] = []
-        seen = set()
-        for individual in candidate_list:
-            encoding = self.encoder.encode(individual)
-            if encoding.architecture_id not in seen:
-                seen.add(encoding.architecture_id)
-                unique.append((individual, encoding))
+        encoded_candidates = [
+            (individual, self.encoder.encode(individual))
+            for individual in candidate_list
+        ]
+
+        # Keep one representative for belief calculation, but keep every original
+        # candidate for monitoring and real evaluation during warm-up/monitor mode.
+        unique_by_architecture: Dict[str, tuple[Any, Any]] = {}
+        for individual, encoding in encoded_candidates:
+            unique_by_architecture.setdefault(
+                encoding.architecture_id, (individual, encoding)
+            )
+        unique = list(unique_by_architecture.values())
 
         unknown: List[tuple[Any, Any]] = []
+        known_fitness: Dict[str, float] = {}
         known_count = 0
         for individual, encoding in unique:
-            if self.archive.contains(encoding.architecture_id):
-                individual.acc = self.archive.get(encoding.architecture_id).fitness_mean
+            architecture_id = encoding.architecture_id
+            if self.archive.contains(architecture_id):
+                known_fitness[architecture_id] = self.archive.get(
+                    architecture_id
+                ).fitness_mean
                 known_count += 1
                 continue
-            if encoding.architecture_id in cache:
-                individual.acc = float(cache[encoding.architecture_id])
+            if architecture_id in cache:
+                cached_fitness = float(cache[architecture_id])
+                individual.acc = cached_fitness
                 self.archive.add_individual(
                     individual=individual,
                     generation=cycle,
@@ -198,9 +220,15 @@ class BeliefManager:
                     source="cache",
                     count_as_new_measurement=False,
                 )
+                known_fitness[architecture_id] = cached_fitness
                 known_count += 1
                 continue
             unknown.append((individual, encoding))
+
+        # Apply known fitness to every repeated candidate with the same UUID.
+        for individual, encoding in encoded_candidates:
+            if encoding.architecture_id in known_fitness:
+                individual.acc = known_fitness[encoding.architecture_id]
 
         assessments: List[CandidateAssessment] = []
         if len(self.archive) > 0:
@@ -211,7 +239,9 @@ class BeliefManager:
                     top_neighbours=self.config.top_neighbours,
                     exclude_exact_match=self.config.exclude_exact_matches,
                 )
-                uncertainty = self.uncertainty_estimator.estimate(belief, self.archive)
+                uncertainty = self.uncertainty_estimator.estimate(
+                    belief, self.archive
+                )
                 novelty = self.novelty.estimate(encoding, self.archive)
                 assessments.append(
                     CandidateAssessment(
@@ -223,26 +253,49 @@ class BeliefManager:
                     )
                 )
 
+        assessment_by_architecture = {
+            item.encoding.architecture_id: item for item in assessments
+        }
         decisions = self._select_assessments(assessments, cycle)
         decision_by_architecture = {
             item.assessment.encoding.architecture_id: item for item in decisions
         }
+        guided_now = self.guided_active(cycle)
         selected_individuals = (
             [item.assessment.individual for item in decisions]
-            if self.guided_active(cycle)
+            if guided_now
             else candidate_list
         )
         selected_record_ids: Dict[str, str] = {}
         selection_reasons: Dict[str, str] = {}
 
-        for assessment in assessments:
-            architecture_id = assessment.encoding.architecture_id
-            decision = decision_by_architecture.get(architecture_id)
+        # Create one monitoring row for every original unknown candidate. This
+        # preserves repeated real evaluations without duplicating archive neighbours.
+        for individual, encoding in encoded_candidates:
+            assessment = assessment_by_architecture.get(encoding.architecture_id)
+            if assessment is None:
+                continue
+
+            decision = decision_by_architecture.get(encoding.architecture_id)
             selected = decision is not None
-            reason = decision.reason if decision else "not_selected"
-            score = decision.selection_score if decision else None
+            if guided_now and selected:
+                selected = (
+                    str(getattr(individual, "id", "unknown"))
+                    == decision.assessment.encoding.individual_id
+                )
+
+            if selected:
+                reason = decision.reason
+                score = decision.selection_score
+            elif decision is not None:
+                reason = "duplicate_not_selected"
+                score = decision.selection_score
+            else:
+                reason = "not_selected"
+                score = None
+
             record = self.monitor.register_pre_evaluation(
-                encoding=assessment.encoding,
+                encoding=encoding,
                 estimate=assessment.belief,
                 run_id=self.run_id,
                 cycle=cycle,
@@ -254,8 +307,9 @@ class BeliefManager:
                 selection_score=score,
             )
             if selected:
-                selected_record_ids[assessment.encoding.individual_id] = record.record_id
-                selection_reasons[assessment.encoding.individual_id] = reason
+                individual_id = str(getattr(individual, "id", "unknown"))
+                selected_record_ids[individual_id] = record.record_id
+                selection_reasons[individual_id] = reason
 
         preparation = CyclePreparation(
             cycle=cycle,
