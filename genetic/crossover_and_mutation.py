@@ -33,36 +33,73 @@ class CrossoverAndMutation(object):
         self.offspring = []
     
     def process(self):
+        """Generate a unique offspring pool with an optional oversized target."""
+
         gen_no = self.params['gen_no']
-        print("gen no in proccess =", gen_no)
+        target_size = int(self.params.get('target_size', len(self.individuals)))
+        if target_size < 1:
+            raise ValueError('target_size must be at least 1')
+
+        print("gen no in process =", gen_no)
         mutation_file = f'./populations/mutation_{gen_no:02d}.txt'
-        #bu kısım sonrada oluşturuldu. cross ve mut için arada kalan bireyleri kurtarmak için
         if os.path.exists(mutation_file):
-            self.log.info(f'[INFO] Existing mutation file found: {mutation_file}, skipping crossover and mutation.')
+            self.log.info(
+                f'[INFO] Existing mutation file found: {mutation_file}, '
+                'skipping crossover and mutation.'
+            )
             pop = Utils.load_population('mutation', gen_no)
             self.offspring = pop.individuals
+            return self.offspring
 
-        else:
-            # Step 1: Crossover
+        if bool(self.params.get('legacy_mode', False)):
             crossover = Crossover(self.individuals, self.prob_crossover, self.log)
-            offspring = crossover.do_crossover()
-
-            # Step 2: Save crossover output
-            self.offspring = offspring
+            self.offspring = crossover.do_crossover()
             Utils.save_population_after_crossover(self.individuals_to_string(), gen_no)
-
-            # Step 3: Mutation
             mutation = Mutation(self.offspring, self.prob_mutation, self.log)
             mutation.do_mutation()
-
-            # Step 4: Yeni bireylere ID ataması
-            for i, indi in enumerate(self.offspring):
-                indi_no = f'indi{gen_no:02d}{i:02d}'
-                indi.id = indi_no
-
-            # Step 5: Save mutation output
+            for index, individual in enumerate(self.offspring):
+                individual.id = 'indi%02d%02d' % (gen_no, index)
             Utils.save_population_after_mutation(self.individuals_to_string(), gen_no)
+            return self.offspring
 
+        unique_offspring = {}
+        raw_crossover_offspring = []
+        parent_count = max(1, len(self.individuals))
+        required_batches = int(np.ceil(target_size / parent_count))
+        max_batches = max(required_batches * 5, required_batches + 2)
+
+        for _ in range(max_batches):
+            crossover = Crossover(self.individuals, self.prob_crossover, self.log)
+            batch = crossover.do_crossover()
+            raw_crossover_offspring.extend(copy.deepcopy(batch))
+
+            mutation = Mutation(batch, self.prob_mutation, self.log)
+            mutation.do_mutation()
+
+            for individual in batch:
+                architecture_id = individual.uuid()[0]
+                if architecture_id not in unique_offspring:
+                    unique_offspring[architecture_id] = individual
+                if len(unique_offspring) >= target_size:
+                    break
+            if len(unique_offspring) >= target_size:
+                break
+
+        # Save the full crossover pool before storing the final mutated candidates.
+        self.offspring = raw_crossover_offspring
+        Utils.save_population_after_crossover(self.individuals_to_string(), gen_no)
+
+        self.offspring = list(unique_offspring.values())[:target_size]
+        if len(self.offspring) < target_size:
+            self.log.warn(
+                'Only %d unique offspring could be generated for target size %d'
+                % (len(self.offspring), target_size)
+            )
+
+        for index, individual in enumerate(self.offspring):
+            individual.id = f'indi{gen_no:02d}{index:03d}'
+
+        Utils.save_population_after_mutation(self.individuals_to_string(), gen_no)
         return self.offspring
     """
     def process(self):
