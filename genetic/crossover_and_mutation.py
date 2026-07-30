@@ -458,7 +458,8 @@ class Mutation(object):
         self.log.info('Mutation position occurs at %d' % (mutation_position))
 
         # Manuel olarak oluşturulmuş liste (type numaraları)
-        type_list = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        #type_list = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        type_list = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         
         # Rastgele seçim
         type_ = random.choice(type_list)
@@ -548,7 +549,8 @@ class Mutation(object):
 
             if num_exist_pool_units >= StatusUpdateTool.get_pool_limit()[1]:
                 # Select a non-pooling unit when the pooling limit is already full.
-                valid_types = [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+                #valid_types = [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+                valid_types = [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
                 type_names = {
                     1: 'RESNET',
                     3: 'DENSENET',
