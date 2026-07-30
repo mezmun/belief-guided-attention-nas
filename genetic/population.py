@@ -687,7 +687,7 @@ class Individual(object):
         self.max_inception_ca = params.get('max_inception_ca', 1)  # maximal number of Inception-CA blocks
 
         self.min_inception_eca = params.get('min_inception_eca', 0)  # minimal number of inception-ECA blocks
-        self.max_inception_eca = params.get('max_inception_eca', 1)  # maximal number of inception-ECA blocks
+        self.max_inception_eca = params.get('max_inception_eca', 0)  # maximal number of inception-ECA blocks
         
         # Parameters for SE-ResNet, CBAM-ResNet, and CA-ResNet
         self.min_resnet_se = params.get('min_resnet_se', 0)
@@ -700,7 +700,7 @@ class Individual(object):
         self.max_resnet_ca = params.get('max_resnet_ca', 1)
 
         self.min_resnet_eca = params.get('min_resnet_eca', 0)
-        self.max_resnet_eca = params.get('max_resnet_eca', 1)
+        self.max_resnet_eca = params.get('max_resnet_eca', 0)
         
         # Parameters for SE-DenseNet, CBAM-DenseNet, and CA-DenseNet
         self.min_densenet_se = params.get('min_densenet_se', 0)
@@ -713,7 +713,7 @@ class Individual(object):
         self.max_densenet_ca = params.get('max_densenet_ca', 1)
 
         self.min_densenet_eca = params.get('min_densenet_eca', 0)
-        self.max_densenet_eca = params.get('max_densenet_eca', 1)
+        self.max_densenet_eca = params.get('max_densenet_eca', 0)
         ###################################################
 
         self.min_resnet_unit = params['min_resnet_unit']
