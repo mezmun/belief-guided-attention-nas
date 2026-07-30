@@ -1,5 +1,5 @@
 from utils import StatusUpdateTool, Utils, Log
-from genetic.population import Population
+from genetic.population import Population, Individual
 from genetic.evaluate import FitnessEvaluate
 from genetic.crossover_and_mutation import CrossoverAndMutation
 from genetic.selection_operator import Selection
@@ -159,6 +159,198 @@ class EvolveCNN(object):
                 if metrics is not None:
                     Log.info('Belief cycle metrics: %s' % metrics.to_dict())
 
+    
+    def _generate_global_candidates(self, generation, evolutionary_candidates, excluded_architecture_ids):
+        """Create 15 balanced and 5 archive-distant global candidates."""
+    
+        balanced_count = 15
+        novelty_count = 5
+        novelty_pool_count = 25
+    
+        # We generate 15 balanced candidates and a separate
+        # pool of 25 candidates for novelty selection.
+        total_global_count = (
+            balanced_count
+            + novelty_pool_count
+        )
+    
+        excluded = set(
+            excluded_architecture_ids or set()
+        )
+    
+        # Do not reproduce any of the 80 evolutionary candidates.
+        excluded.update(
+            individual.uuid()[0]
+            for individual in evolutionary_candidates
+        )
+    
+        generated = []
+        seen = set(excluded)
+    
+        # Preserve the random state used by the main GA.
+        python_random_state = random.getstate()
+        numpy_random_state = np.random.get_state()
+    
+        try:
+            for attempt in range(10):
+                if len(generated) >= total_global_count:
+                    break
+    
+                remaining = (
+                    total_global_count
+                    - len(generated)
+                )
+    
+                batch_size = max(
+                    remaining,
+                    20,
+                )
+    
+                seed = (
+                    2312390
+                    + int(generation) * 100
+                    + attempt
+                )
+    
+                dummy = Individual(
+                    self.params,
+                    indi_no='temp',
+                )
+    
+                raw_population, name_to_id = (
+                    dummy.population_with_all_positions(
+                        pop_size=batch_size,
+                        seed=seed,
+                    )
+                )
+    
+                balanced_positions = (
+                    Individual.balance_population_arrays(
+                        raw_population,
+                        name_to_id,
+                        tolerance=1,
+                    )
+                )
+    
+                for positions in balanced_positions:
+                    individual = Individual(
+                        self.params,
+                        indi_no='temp',
+                    )
+    
+                    individual.initialize(
+                        positions
+                    )
+    
+                    architecture_id = (
+                        individual.uuid()[0]
+                    )
+    
+                    if architecture_id in seen:
+                        continue
+    
+                    seen.add(architecture_id)
+                    generated.append(individual)
+    
+                    if (
+                        len(generated)
+                        >= total_global_count
+                    ):
+                        break
+    
+        finally:
+            # Global generation must not change the
+            # crossover-mutation random sequence.
+            random.setstate(
+                python_random_state
+            )
+    
+            np.random.set_state(
+                numpy_random_state
+            )
+    
+        if len(generated) < total_global_count:
+            raise RuntimeError(
+                'Could not generate enough '
+                'unique global candidates.'
+            )
+    
+        # The first 15 candidates form the
+        # balanced global injection group.
+        balanced_candidates = generated[
+            :balanced_count
+        ]
+    
+        # The remaining 25 candidates are
+        # considered for novelty selection.
+        novelty_pool = generated[
+            balanced_count:
+        ]
+    
+        # Novelty is measured against:
+        # 1. the evaluated archive,
+        # 2. the 80 evolutionary candidates,
+        # 3. the 15 balanced global candidates.
+        reference_encodings = (
+            self.belief_manager.archive.encodings()
+            + [
+                self.belief_manager.encoder.encode(
+                    individual
+                )
+                for individual in (
+                    evolutionary_candidates
+                    + balanced_candidates
+                )
+            ]
+        )
+    
+        novelty_scores = []
+    
+        for individual in novelty_pool:
+            encoding = (
+                self.belief_manager.encoder.encode(
+                    individual
+                )
+            )
+    
+            max_similarity = max(
+                self.belief_manager.similarity.compare(
+                    encoding,
+                    reference,
+                ).total
+                for reference
+                in reference_encodings
+            )
+    
+            novelty_scores.append(
+                (
+                    max_similarity,
+                    encoding.architecture_id,
+                    individual,
+                )
+            )
+    
+        # A lower maximum similarity means
+        # a more novel architecture.
+        novelty_scores.sort(
+            key=lambda item: (
+                item[0],
+                item[1],
+            )
+        )
+    
+        novelty_candidates = [
+            item[2]
+            for item
+            in novelty_scores[:novelty_count]
+        ]
+    
+        return (
+            balanced_candidates
+            + novelty_candidates
+        )
+    
+
     def crossover_and_mutation(
         self,
         target_size=None,
@@ -182,9 +374,58 @@ class EvolveCNN(object):
                     or self.params['pop_size'],
                 },
             )
-            offspring = cm.process()
-            self.parent_pops = copy.deepcopy(self.pops) # this is used for elitism next
-            self.pops.individuals = copy.deepcopy(offspring)
+
+
+
+
+        offspring = cm.process()
+        # During guided search, crossover and mutation
+        # provide 80 candidates. Add 20 global candidates.
+        if not legacy_mode:
+            global_candidates = (
+                self._generate_global_candidates(
+                    generation=self.pops.gen_no,
+                    evolutionary_candidates=offspring,
+                    excluded_architecture_ids=(
+                        excluded_architecture_ids
+                        or set()
+                    ),
+                )
+            )
+        
+            offspring.extend(
+                global_candidates
+            )
+        
+            # Reassign candidate IDs after combining
+            # the 80 + 15 + 5 candidates.
+            for index, individual in enumerate(
+                offspring
+            ):
+                individual.id = (
+                    f'indi{self.pops.gen_no:02d}'
+                    f'{index:03d}'
+                )
+        
+                individual.acc = -1.0
+        
+            # The crossover-mutation function initially
+            # saves only the 80 evolutionary candidates.
+            # Overwrite the file with the final 100 candidates.
+            cm.offspring = offspring
+        
+            Utils.save_population_after_mutation(
+                cm.individuals_to_string(),
+                self.pops.gen_no,
+            )
+        
+        self.parent_pops = copy.deepcopy(
+            self.pops
+        )
+        
+        self.pops.individuals = copy.deepcopy(
+            offspring
+        )
         #Log.info('offsprings are coppied as new individuals after cros and mut')
             
         if self.horovod_enabled:
@@ -369,14 +610,24 @@ class EvolveCNN(object):
                         self.params['pop_size'], curr_gen
                     )
                     legacy_mode = not self.belief_manager.guided_active(curr_gen)
+
                     if not legacy_mode:
+                        # Only 80 candidates are produced by
+                        # crossover and mutation. The remaining
+                        # 20 candidates are generated globally.
+                        target_size = 80
+                        minimum_required_size = 80
+                    
                         cache_map = Utils.load_cache_data()
+                    
                         excluded_architecture_ids = (
-                            self.belief_manager.excluded_architecture_ids(cache_map)
+                            self.belief_manager
+                            .excluded_architecture_ids(
+                                cache_map
+                            )
                         )
-                        minimum_required_size = (
-                            self.belief_manager.config.evaluation_budget
-                        )
+                                      
+            
             self.crossover_and_mutation(
                 target_size=target_size,
                 legacy_mode=legacy_mode,
