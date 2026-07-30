@@ -215,27 +215,49 @@ class SimilarityBeliefEstimator:
         prior_mean: float,
         prior_variance: float,
     ) -> tuple[float, float]:
-        """Apply a batch Gaussian update equivalent to Kalman precision fusion."""
-
+        """Fuse the archive prior with local similarity evidence.
+    
+        Evidence quality is limited by both the effective neighbour count and
+        the total kernel mass. This prevents many very weak neighbours from
+        creating false posterior certainty.
+        """
+    
         safe_prior_variance = max(prior_variance, 1e-8)
         observation_variance = safe_prior_variance
         prior_precision = 1.0 / safe_prior_variance
-
-        weighted_precision_mean = 0.0
-        for entry, _, kernel_weight in weighted_items:
-            normalized_weight = kernel_weight / total_weight
-            effective_weight = normalized_weight * max(effective_count, 1.0)
-            weighted_precision_mean += (
-                effective_weight * entry.fitness_mean / observation_variance
-            )
-
-        observation_precision = max(effective_count, 1.0) / observation_variance
-        posterior_precision = prior_precision + observation_precision
+    
+        kernel_mean = sum(
+            entry.fitness_mean * kernel_weight
+            for entry, _, kernel_weight in weighted_items
+        ) / total_weight
+    
+        evidence_count = max(
+            0.0,
+            min(float(effective_count), float(total_weight)),
+        )
+    
+        if evidence_count <= 1e-12:
+            return float(prior_mean), float(safe_prior_variance)
+    
+        observation_precision = (
+            evidence_count / observation_variance
+        )
+    
+        posterior_precision = (
+            prior_precision + observation_precision
+        )
+    
         posterior_mean = (
-            prior_precision * prior_mean + weighted_precision_mean
+            prior_precision * prior_mean
+            + observation_precision * kernel_mean
         ) / posterior_precision
+    
         posterior_variance = 1.0 / posterior_precision
-        return float(posterior_mean), float(posterior_variance)
+    
+        return (
+            float(posterior_mean),
+            float(posterior_variance),
+        )
 
     @staticmethod
     def _archive_prior(
