@@ -57,7 +57,7 @@ class Selection(object):
         q = max(min(q, q_start), q_end)
     
         # High fitness → low rank → high pseudo-fitness
-        ranks = rankdata([-f for f in fitness_list], method='ordinal')
+        ranks = rankdata([-f for f in fitness_list], method='average')
         pseudo_fitness = np.array([q ** (r - 1) for r in ranks])
     
         # Print summary
