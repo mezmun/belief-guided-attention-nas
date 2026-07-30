@@ -172,31 +172,41 @@ class FitnessEvaluate(object):
                 
                 _class = getattr(_module, 'RunModel')
                 cls_obj = _class()
-
+                
                 
                 # Eğitim aşaması:
                 if self.horovod_enabled:
-                    #hvd.barrier()
-                    #if (self.rank == 0):
-                    #Log.info('Starting do_work function...')
-                    # Tüm rank’lar eğitim yapar
-                    
-                    try:
-                        #print(f"[DEBUG] Rank {hvd.rank()} calling do_work...")
-                        cls_obj.do_work(file_name)
-                        #print(f"[DEBUG] Rank {hvd.rank()} do_work returned!")
-                    except BaseException as e:
-                        print(f"[DEBUG] Rank {hvd.rank()} do_work crashed! {e}")
-
-                    
-                    #cls_obj.do_work(file_name)
-                    #print(f"Rank {hvd.rank()} reached barrier after training...")
+                    # All Horovod ranks train the same architecture.
+                    # Do not hide training exceptions.
+                    cls_obj.do_work(file_name)
+                
+                    # Keep the existing synchronization point.
                     hvd.barrier()
+                
                 else:
-                    # Tek süreç
-                    p = Process(target=cls_obj.do_work, args=(file_name, str(gpu_id),))
+                    # Single-process execution
+                    p = Process(
+                        target=cls_obj.do_work,
+                        args=(file_name, str(gpu_id),)
+                    )
+                
                     p.start()
                     p.join()
+                
+                    # Exceptions raised inside multiprocessing.Process
+                    # do not automatically propagate to the parent process.
+                    if p.exitcode != 0:
+                        raise RuntimeError(
+                            'Model training process failed for %s '
+                            'with exit code %s'
+                            % (
+                                file_name,
+                                p.exitcode,
+                            )
+                        )
+                
+        
+            
             else:
                 # Bu indi için fitness zaten var, sadece rank 0 log ve dosya yazma yapar
                 if (not self.horovod_enabled) or (self.rank == 0):
