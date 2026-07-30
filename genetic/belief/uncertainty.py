@@ -51,9 +51,30 @@ class BeliefUncertaintyEstimator:
         """Calculate raw and optionally calibrated uncertainty."""
 
         archive_variance = self._archive_variance(archive)
-        effective_count = max(0.0, belief.effective_neighbour_count)
-        epistemic_variance = archive_variance / (1.0 + effective_count)
-        local_variance = max(0.0, belief.neighbour_disagreement)
+        
+        effective_count = max(
+            0.0,
+            belief.effective_neighbour_count,
+        )
+        
+        evidence_strength = max(
+            0.0,
+            belief.evidence_strength,
+        )
+        
+        effective_evidence = min(
+            effective_count,
+            evidence_strength,
+        )
+        
+        epistemic_variance = (
+            archive_variance
+            / (1.0 + effective_evidence)
+        )
+        
+        local_variance = max(0.0,
+            belief.neighbour_disagreement,
+        )
 
         if belief.model_variance is not None:
             raw_variance = max(0.0, belief.model_variance) + local_variance
@@ -61,9 +82,9 @@ class BeliefUncertaintyEstimator:
             raw_variance = epistemic_variance + local_variance
 
         raw_uncertainty = math.sqrt(max(raw_variance, 1e-16))
-        evidence_weakness = 1.0 / (1.0 + max(0.0, belief.evidence_strength))
+        evidence_weakness = 1.0 / (1.0 + evidence_strength)
         local_standard_deviation = math.sqrt(local_variance)
-        neighbour_sparsity = 1.0 / (1.0 + effective_count)
+        neighbour_sparsity = 1.0 / (1.0 + effective_evidence)
 
         calibrated = bool(self.calibrator and self.calibrator.state.fitted)
         uncertainty = raw_uncertainty
