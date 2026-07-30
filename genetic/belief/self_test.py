@@ -56,6 +56,7 @@ def run() -> None:
             candidate_multiplier=2,
             evaluation_budget=2,
             minimum_archive_size=2,
+            belief_method="bayesian_precision",
             calibration_min_samples=2,
             similarity_min_pairs=1,
             output_directory=str(Path(directory) / "belief_outputs"),
@@ -79,6 +80,10 @@ def run() -> None:
         ]
         preparation = manager.prepare_cycle(candidates, cycle=1, cache_map={})
         assert len(preparation.selected_individuals) == 2
+        first_record = manager.monitor.pre_records(cycle=1)[0]
+        
+        assert first_record.model_variance is not None
+        assert first_record.raw_uncertainty is not None
 
         for index, individual in enumerate(preparation.selected_individuals):
             individual.acc = 0.815 + index * 0.01
