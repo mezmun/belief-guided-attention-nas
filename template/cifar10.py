@@ -1104,36 +1104,48 @@ class TrainModel(object):
 
         #print("Before lr_custom function", flush=True)
 
-
+        
+        
         from torch.optim.lr_scheduler import LambdaLR
         
-        # Özel LR değişim fonksiyonu
+        # LambdaLR mutlak öğrenme oranı değil,
+        # başlangıç öğrenme oranına uygulanacak çarpanı bekler.
         def custom_lr_scheduler(epoch):
             if epoch == 0:
-                return 0.01
+                return 1.0
             elif epoch > 0 and epoch <= 10:
-                return 0.1
+                return 10.0
             elif epoch > 10 and epoch <= 20:
-                return 0.01
+                return 1.0
             else:  # epoch > 20
-                return 0.001
+                return 0.1
         
-        # LR ölçekleme faktörünü hesapla (Horovod için)
+        # Her GPU/rank için batch size sabit olduğu için
+        # global batch büyüdükçe LR doğrusal olarak ölçeklenir.
         if self.horovod_enabled:
             lr_scaler = hvd.size()
-            base_lr = custom_lr_scheduler(0) * lr_scaler  # Başlangıç lr'si
         else:
-            base_lr = custom_lr_scheduler(0)  # Tek GPU için başlangıç lr'si
+            lr_scaler = 1
         
-        # Optimizasyonu tanımla
-        self.optimizer = optim.SGD(self.net.parameters(), lr=base_lr, momentum=0.9, weight_decay=5e-4)
-        # self.optimizer = optim.Adam(self.net.parameters(), lr=base_lr, betas=(0.9, 0.999))
+        # 1 GPU: 0.01
+        # 2 GPU: 0.02
+        # 4 GPU: 0.04
+        base_lr = 0.01 * lr_scaler
+        
+        self.optimizer = optim.SGD(
+            self.net.parameters(),
+            lr=base_lr,
+            momentum=0.9,
+            weight_decay=5e-4
+        )
+        
+        self.scheduler = LambdaLR(
+            self.optimizer,
+            lr_lambda=custom_lr_scheduler
+        )
+        
+        
 
-        #print("After self.optimizier SGD", flush=True)
-        
-        # LambdaLR kullanarak öğrenme oranını ayarla
-        self.scheduler = LambdaLR(self.optimizer, lr_lambda=custom_lr_scheduler)
-        
         
         #if self.horovod_enabled:
         #    hvd.barrier()
