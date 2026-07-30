@@ -58,6 +58,8 @@ class UncertaintyCalibrator:
             feature_scales=[1.0] * self.FEATURE_COUNT,
         )
 
+
+    
     @staticmethod
     def feature_vector(
         evidence_strength: float,
@@ -65,12 +67,43 @@ class UncertaintyCalibrator:
         effective_neighbour_count: float,
     ) -> List[float]:
         """Build stable uncertainty features from one belief estimate."""
-
-        evidence_weakness = 1.0 / (1.0 + max(0.0, float(evidence_strength)))
-        local_standard_deviation = math.sqrt(max(0.0, float(neighbour_disagreement)))
-        neighbour_sparsity = 1.0 / (1.0 + max(0.0, float(effective_neighbour_count)))
-        return [evidence_weakness, local_standard_deviation, neighbour_sparsity]
-
+    
+        safe_strength = max(
+            0.0,
+            float(evidence_strength),
+        )
+    
+        safe_count = max(
+            0.0,
+            float(effective_neighbour_count),
+        )
+    
+        effective_evidence = min(
+            safe_strength,
+            safe_count,
+        )
+    
+        evidence_weakness = 1.0 / (
+            1.0 + safe_strength
+        )
+    
+        local_standard_deviation = math.sqrt(
+            max(
+                0.0,
+                float(neighbour_disagreement),
+            )
+        )
+    
+        neighbour_sparsity = 1.0 / (
+            1.0 + effective_evidence
+        )
+    
+        return [
+            evidence_weakness,
+            local_standard_deviation,
+            neighbour_sparsity,
+        ]
+    
     def fit(self, records: Iterable[EvaluatedBeliefRecord]) -> bool:
         """Fit the calibration model from completed evaluation records."""
 
