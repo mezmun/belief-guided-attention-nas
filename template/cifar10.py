@@ -1333,60 +1333,94 @@ class RunModel(object):
     
     #def do_work(self, gpu_id, file_id): #original version
     def do_work(self, file_id, gpu_id=None):
-
-        try: 
-            #print("in RunModel.do_work function", flush=True)
-            
-            # --- Horovod Enabled Check ---
-            horovod_enabled = StatusUpdateTool.is_horovod_enabled()
-            
-            if horovod_enabled:
-                pass
-            else:
-                os.environ['CUDA_VISIBLE_DEVICES'] = '0'  # Use GPU 0 by default
-            # --------------------------------
+        """Train one architecture and save fitness only after success."""
     
-            best_acc = 0.0
-        except Exception as e:
-            print(f"Exception in do_work(): {e}")
-            
+        horovod_enabled = (
+            StatusUpdateTool.is_horovod_enabled()
+        )
+    
+        model_runner = None
+    
         try:
-            #if not horovod_enabled or (horovod_enabled and hvd.rank() == 0):
-            #print("train model...", flush=True)
-            
-            #if horovod_enabled:
-            #    hvd.barrier()
-                
-            m = TrainModel()
-            
-            #print("Rank X -> m is assigned as TrainModel", flush=True)
-            
-            if not horovod_enabled or (horovod_enabled and hvd.rank() == 0):
-                m.log_record('Used GPU#%s, worker name:%s[%d]'%(gpu_id, multiprocessing.current_process().name, os.getpid()), first_time=True)
-            
-            #print("Rank X -> Just before m.process()", flush=True)
-            best_acc = m.process()
-            #print("Rank X -> Just after m.process()", flush=True)
-
+            if not horovod_enabled:
+                os.environ[
+                    'CUDA_VISIBLE_DEVICES'
+                ] = '0'
+    
+            model_runner = TrainModel()
+    
+            if (
+                not horovod_enabled
+                or hvd.rank() == 0
+            ):
+                model_runner.log_record(
+                    'Used GPU#%s, worker name:%s[%d]'
+                    % (
+                        gpu_id,
+                        multiprocessing
+                        .current_process()
+                        .name,
+                        os.getpid(),
+                    ),
+                    first_time=True,
+                )
+    
+            best_acc = model_runner.process()
+    
+            # Keep the existing Horovod barrier.
             if horovod_enabled:
                 hvd.barrier()
-                
-            #import random
-            #best_acc = random.random()
-        except BaseException as e:
-            print('Exception occurs, file:%s, pid:%d...%s'%(file_id, os.getpid(), str(e)))
-            if not horovod_enabled or (horovod_enabled and hvd.rank() == 0):
-                m.log_record('Exception occur:%s'%(str(e)))
-        finally:
-            if not horovod_enabled or (horovod_enabled and hvd.rank() == 0):
-                m.log_record('Finished-Acc:%.3f'%best_acc)
-
-                f = open('./populations/after_%s.txt'%(file_id[4:6]), 'a+')
-                f.write('%s=%.5f\n'%(file_id, best_acc))
-                f.flush()
-                f.close()
-
-
+    
+            if (
+                not horovod_enabled
+                or hvd.rank() == 0
+            ):
+                model_runner.log_record(
+                    'Finished-Acc:%.3f'
+                    % best_acc
+                )
+    
+                with open(
+                    './populations/after_%s.txt'
+                    % file_id[4:6],
+                    'a+',
+                ) as handle:
+                    handle.write(
+                        '%s=%.5f\n'
+                        % (
+                            file_id,
+                            best_acc,
+                        )
+                    )
+                    handle.flush()
+    
+            return best_acc
+    
+        except Exception as exc:
+            if (
+                not horovod_enabled
+                or hvd.rank() == 0
+            ):
+                print(
+                    'Exception occurs, '
+                    'file:%s, pid:%d...%s'
+                    % (
+                        file_id,
+                        os.getpid(),
+                        str(exc),
+                    ),
+                    flush=True,
+                )
+    
+                if model_runner is not None:
+                    model_runner.log_record(
+                        'Exception occur:%s'
+                        % str(exc)
+                    )
+    
+            # Do not save a failed run
+            # as a real zero-fitness result.
+            raise
 
             
 """
