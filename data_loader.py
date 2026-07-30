@@ -230,7 +230,7 @@ def get_test_loader(data_dir,
     )
 
     # --- Horovod Enabled Check ---
-    #horovod_enabled = StatusUpdateTool.is_horovod_enabled()
+    horovod_enabled = StatusUpdateTool.is_horovod_enabled()
     # --------------------------------
 
     
