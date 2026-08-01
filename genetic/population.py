@@ -859,7 +859,24 @@ class Individual(object):
 
     @staticmethod
     def balance_population_arrays(population_arrays, module_name_to_id, tolerance=1):
-        adjustable_ids = [v for k, v in module_name_to_id.items() if k != 'pool']
+        disabled_modules = {
+            'inception_eca',
+            'resnet_eca',
+            'densenet_eca',
+        }
+
+
+        adjustable_ids = [
+            module_id
+            for module_name, module_id in module_name_to_id.items()
+            if (
+                module_name != 'pool'
+                and module_name not in disabled_modules
+            )
+        ]
+        
+                
+        #adjustable_ids = [v for k, v in module_name_to_id.items() if k != 'pool']
         usage = Counter()
         for arr in population_arrays:
             usage.update(arr.tolist())
