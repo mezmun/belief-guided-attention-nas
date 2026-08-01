@@ -137,8 +137,20 @@ class FitnessEvaluate(object):
 
                 if not self.horovod_enabled:
                     print("Horovod aktif değil... GPU seçiliyor...")
-                    time.sleep(60)
+                    #time.sleep(60)
+                    #gpu_id = GPUTools.detect_availabel_gpu_id()
+                    gpu_wait_start = time.monotonic()
                     gpu_id = GPUTools.detect_availabel_gpu_id()
+                    
+                    while gpu_id is None:
+                        if time.monotonic() - gpu_wait_start >= 1800:
+                            raise TimeoutError(
+                                "30 dakika içinde kullanılabilir GPU bulunamadı."
+                            )
+                    
+                        time.sleep(2)
+                        gpu_id = GPUTools.detect_availabel_gpu_id()
+                                        
                     while gpu_id is None:
                         time.sleep(300)
                         gpu_id = GPUTools.detect_availabel_gpu_id()
@@ -221,18 +233,23 @@ class FitnessEvaluate(object):
             #            hvd.barrier()
                 
         # Eğer offspring değerlendirildiyse GPU kontrolleri veya bariyer koyabiliriz
-        if has_evaluated_offspring:
-            if not self.horovod_enabled:
+        #if has_evaluated_offspring:
+        #    if not self.horovod_enabled:
                 # Tek süreçte GPU'ların boşalmasını bekle
-                all_finished = False
-                while not all_finished:
-                    time.sleep(300)
-                    all_finished = GPUTools.all_gpu_available()
-            else:
+         #       all_finished = False
+         #       while not all_finished:
+         #           time.sleep(300)
+         #           all_finished = GPUTools.all_gpu_available()
+         #   else:
                 # Horovod etkin, tüm rank'lar buraya gelsin
-                if self.horovod_enabled:
-                    hvd.barrier()
+         #       if self.horovod_enabled:
+         #           hvd.barrier()
+        if has_evaluated_offspring:
+        if self.horovod_enabled:
+            hvd.barrier()
 
+        
+            '''
             # Değerlendirme sonuçlarını after_xx.txt'den okuma sadece rank 0
             if (not self.horovod_enabled) or (self.rank == 0):
                 file_name = './populations/after_%s.txt' % (self.individuals[0].id[4:6])
@@ -253,6 +270,80 @@ class FitnessEvaluate(object):
                                 (indi.id, file_name))
                             time.sleep(120)
                         indi.acc = fitness_map[indi.id]
+            '''
+                        # Değerlendirme sonuçlarını after_xx.txt'den okuma sadece rank 0
+            if (not self.horovod_enabled) or (self.rank == 0):
+                file_name = (
+                    './populations/after_%s.txt'
+                    % self.individuals[0].id[4:6]
+                )
+
+                # Yalnızca fitness değeri henüz atanmamış bireyleri bekle.
+                expected_ids = {
+                    indi.id
+                    for indi in self.individuals
+                    if indi.acc == -1
+                }
+
+                fitness_map = {}
+                wait_started = time.monotonic()
+                timeout_seconds = 30
+                poll_seconds = 1
+
+                while True:
+                    fitness_map = {}
+
+                    # Dosya oluşmuşsa her kontrolde yeniden oku.
+                    if os.path.exists(file_name):
+                        with open(file_name, 'r') as f:
+                            for line in f:
+                                line = line.strip()
+
+                                if not line:
+                                    continue
+
+                                key, value = line.split('=', 1)
+                                fitness_map[key] = float(value)
+
+                    missing_ids = sorted(
+                        indi_id
+                        for indi_id in expected_ids
+                        if indi_id not in fitness_map
+                    )
+
+                    # Tüm gerekli fitness değerleri mevcutsa devam et.
+                    if not missing_ids:
+                        break
+
+                    elapsed = time.monotonic() - wait_started
+
+                    if elapsed >= timeout_seconds:
+                        raise RuntimeError(
+                            'Fitness kayıtları zamanında bulunamadı. '
+                            'Eksik bireyler: %s, dosya: %s'
+                            % (
+                                missing_ids,
+                                file_name,
+                            )
+                        )
+
+                    self.log.warning(
+                        'Fitness kayıtları henüz tamamlanmadı. '
+                        'Eksik bireyler: %s. '
+                        '%s saniye sonra tekrar kontrol edilecek.'
+                        % (
+                            missing_ids,
+                            poll_seconds,
+                        )
+                    )
+
+                    time.sleep(poll_seconds)
+
+                # Dosyada bulunan sonuçları bireylere ata.
+                for indi in self.individuals:
+                    if indi.acc == -1:
+                        indi.acc = fitness_map[indi.id]
+
             
             # Sonuçların okuması bitti, senkronize olun
             if self.horovod_enabled:
