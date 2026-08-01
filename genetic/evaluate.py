@@ -245,8 +245,8 @@ class FitnessEvaluate(object):
          #       if self.horovod_enabled:
          #           hvd.barrier()
         if has_evaluated_offspring:
-        if self.horovod_enabled:
-            hvd.barrier()
+            if self.horovod_enabled:
+                hvd.barrier()
 
         
             '''
