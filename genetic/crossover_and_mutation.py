@@ -358,7 +358,8 @@ class Crossover(object):
                             # DenseNet output is unchanged, so downstream channels
                             # do not need to be recalculated.
                             if estimated_out_channel == unit_list1[j].out_channel:
-                                break
+                                keep_out_channel = estimated_out_channel
+                                continue
 
                             self.log.info(
                                 'Due to the above change, unit at %d '
@@ -418,7 +419,8 @@ class Crossover(object):
                             # DenseNet output is unchanged, so downstream channels
                             # do not need to be recalculated.
                             if estimated_out_channel == unit_list2[j].out_channel:
-                                break
+                                keep_out_channel = estimated_out_channel
+                                continue
 
                             self.log.info(
                                 'Due to the above change, unit at %d '
@@ -869,7 +871,8 @@ class Mutation(object):
                         # DenseNet output is unchanged, so downstream channels
                         # do not need to be recalculated.
                         if estimated_out_channel == indi.units[i].out_channel:
-                            break
+                            keep_out_channel = estimated_out_channel
+                            continue
 
                         self.log.info(
                             'Due to the above mutation, unit at %d '
@@ -932,7 +935,8 @@ class Mutation(object):
                             # DenseNet output is unchanged, so downstream channels
                             # do not need to be recalculated.
                             if estimated_out_channel == indi.units[i].out_channel:
-                                break
+                                keep_out_channel = estimated_out_channel
+                                continue
 
                             self.log.info(
                                 'Due to the above mutation, unit at %d '
@@ -1064,7 +1068,8 @@ class Mutation(object):
                             # DenseNet output is unchanged, so downstream channels
                             # do not need to be recalculated.
                             if estimated_out_channel == indi.units[i].out_channel:
-                                break
+                                keep_out_channel = estimated_out_channel
+                                continue
 
                             self.log.info(
                                 'Due to the above mutation, unit at %d '
@@ -1146,7 +1151,8 @@ class Mutation(object):
                         # DenseNet output is unchanged, so downstream channels
                         # do not need to be recalculated.
                         if estimated_out_channel == indi.units[i].out_channel:
-                            break
+                            keep_out_channel = estimated_out_channel
+                            continue
 
                         self.log.info(
                             'Due to the above mutation, unit at %d '
