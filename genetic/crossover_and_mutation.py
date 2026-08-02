@@ -1,3 +1,4 @@
+
 """
 number of resnet/densenet/pool deneme
                     ----add resnet/densenet/pool
@@ -951,7 +952,9 @@ class Mutation(object):
                             indi.units[i].out_channel = estimated_out_channel
                             keep_out_channel = estimated_out_channel
                     else:
-                        break
+                        # Pooling does not change the channel count. Continue
+                        # until the next computational unit is reached.
+                        continue
     
             else:
                 # Remove a pooling unit.
